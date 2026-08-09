@@ -1,0 +1,9 @@
+{
+  "name": "com.moderndownloadmanager.host",
+  "description": "Modern Download Manager native messaging host",
+  "path": "REPLACED_BY_INSTALL_SCRIPT",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://gpflfhfbgjbijbocjdjngdfkohaojmaf/"
+  ]
+}

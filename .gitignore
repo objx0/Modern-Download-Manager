@@ -1,0 +1,14 @@
+.vs/
+**/bin/
+**/obj/
+*.user
+*.suo
+*.db3
+*.db3-shm
+*.db3-wal
+extension-dev-keys/*
+!extension-dev-keys/extension_id.txt
+!extension-dev-keys/extension_public.der
+!extension-dev-keys/extension_public_base64.txt
+artifacts/
+.nuget/packages/

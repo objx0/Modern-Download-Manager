@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>ModernDownloadManager.Core</RootNamespace>
+    <AssemblyName>ModernDownloadManager.Core</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Lightweight, cross-platform SQLite ORM. Swap for Microsoft.Data.Sqlite if preferred. -->
+    <PackageReference Include="sqlite-net-pcl" Version="1.9.172" />
+  </ItemGroup>
+
+</Project>

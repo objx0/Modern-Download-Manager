@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RootNamespace>ModernDownloadManager.NativeHost</RootNamespace>
+    <AssemblyName>ModernDownloadManager.NativeHost</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Chrome/Edge launch the host directly and do not use the user's
+         terminal environment. Ship the .NET runtime beside the host so the
+         extension works even when the desktop .NET runtime is absent. -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <!-- WinExe (no console window) so Chrome/Edge spawning this per-message
+         doesn't flash a black window — stdin/stdout redirection still works
+         fine since Chrome connects the handles directly regardless of subsystem. -->
+    <OutputType>WinExe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ModernDownloadManager.Core\ModernDownloadManager.Core.csproj" />
+  </ItemGroup>
+
+</Project>
