@@ -54,6 +54,9 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
 
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ctx.Cts.Token, cancellationToken);
             var ct = linkedCts.Token;
+            var previousETag = item.ETag;
+            var previousLastModified = item.LastModified;
+            var hadPartialDownload = item.DownloadedBytes > 0 || Directory.Exists(GetTempDir(item));
             var probe = await ProbeAsync(item, ct);
             item.TotalBytes = probe.ContentLength ?? item.TotalBytes;
             item.SupportsResume = probe.AcceptsRanges;
@@ -68,6 +71,11 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
 
             Directory.CreateDirectory(item.DestinationDirectory);
             var tempDir = GetTempDir(item);
+            if (hadPartialDownload && ValidatorsChanged(previousETag, previousLastModified, probe.ETag, probe.LastModified))
+            {
+                CleanupTempDir(tempDir);
+                item.DownloadedBytes = 0;
+            }
             Directory.CreateDirectory(tempDir);
 
             ctx.Segments.AddRange(BuildSegments(item, tempDir));
@@ -99,6 +107,11 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
             SetState(item, DownloadState.Merging);
             await MergeSegmentsAsync(item, ctx.Segments);
 
+            // Some servers omit Content-Length. Once the merged file exists, its
+            // length is the authoritative completed size for both persistence and
+            // the UI (and prevents a completed row from displaying 0 B / 0 B).
+            if (File.Exists(item.FullPath))
+                item.TotalBytes = new FileInfo(item.FullPath).Length;
             item.CompletedAt = DateTimeOffset.UtcNow;
             item.DownloadedBytes = item.TotalBytes;
             SetState(item, DownloadState.Completed);
@@ -370,9 +383,18 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
         {
             try
             {
+                if (!item.SupportsResume && segment.DownloadedBytes > 0)
+                {
+                    segment.DownloadedBytes = 0;
+                    using (var reset = new FileStream(segment.TempFilePath, FileMode.Create, FileAccess.Write, FileShare.None))
+                    {
+                    }
+                }
+
                 using var request = new HttpRequestMessage(HttpMethod.Get, item.Url);
                 ApplyRequestHeaders(request, item);
 
+                var expectedBytes = segment.TotalBytes - segment.DownloadedBytes;
                 if (item.SupportsResume)
                     request.Headers.Range = new RangeHeaderValue(segment.ResumeOffset, segment.EndByte);
 
@@ -382,6 +404,12 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
                 if (item.SupportsResume && response.StatusCode != HttpStatusCode.PartialContent)
                     throw new IOException("The server ignored the requested byte range; refusing to append potentially invalid data.");
 
+                if (item.SupportsResume)
+                {
+                    var range = response.Content.Headers.ContentRange;
+                    if (range?.From != segment.ResumeOffset || range.To != segment.EndByte || range.Length != item.TotalBytes)
+                        throw new IOException("The server returned an invalid byte range; refusing to append potentially invalid data.");
+                }
                 await using var responseStream = await response.Content.ReadAsStreamAsync(ct);
                 await using var fileStream = new FileStream(
                     segment.TempFilePath,
@@ -400,6 +428,9 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
                     segment.DownloadedBytes += read;
                     ReportProgress(item, ctx, read);
                 }
+
+                if (segment.DownloadedBytes - (segment.TotalBytes - expectedBytes) != expectedBytes)
+                    throw new IOException($"Segment {segment.Index} ended early; expected {expectedBytes} bytes.");
 
                 segment.State = SegmentState.Completed;
                 return;
@@ -466,12 +497,20 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
     private async Task MergeSegmentsAsync(DownloadItem item, List<DownloadSegment> segments)
     {
         item.FileName = GetAvailableFileName(item);
-        await using var output = new FileStream(item.FullPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
-        foreach (var segment in segments.OrderBy(s => s.Index))
+        var finalizingPath = item.FullPath + ".mdm-finalizing";
+        try { if (File.Exists(finalizingPath)) File.Delete(finalizingPath); } catch { }
+
         {
-            await using var input = new FileStream(segment.TempFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true);
-            await input.CopyToAsync(output);
+            await using var output = new FileStream(finalizingPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, useAsync: true);
+            foreach (var segment in segments.OrderBy(s => s.Index))
+            {
+                await using var input = new FileStream(segment.TempFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true);
+                await input.CopyToAsync(output);
+            }
+            await output.FlushAsync();
+            output.Flush(true);
         }
+        File.Move(finalizingPath, item.FullPath, overwrite: false);
     }
 
     private static string GetAvailableFileName(DownloadItem item)
@@ -504,6 +543,11 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
 
     private static string GetTempDir(DownloadItem item) =>
         Path.Combine(item.DestinationDirectory, $".mdm-{item.Id:N}");
+
+    private static bool ValidatorsChanged(string? oldETag, DateTimeOffset? oldLastModified,
+        string? newETag, DateTimeOffset? newLastModified) =>
+        (oldETag is not null && !string.Equals(oldETag, newETag, StringComparison.Ordinal)) ||
+        (oldETag is null && oldLastModified is not null && !Nullable.Equals(oldLastModified, newLastModified));
 
     private static void CleanupTempDir(string tempDir)
     {

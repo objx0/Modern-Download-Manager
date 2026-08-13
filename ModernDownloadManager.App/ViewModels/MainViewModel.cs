@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Reflection;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using ModernDownloadManager.Core.Engine;
@@ -28,6 +29,17 @@ public partial class MainViewModel : ObservableObject
 
     [ObservableProperty]
     private bool isSettingsView;
+
+    [ObservableProperty]
+    private bool isAboutView;
+
+    public bool IsDownloadsView => !IsSettingsView && !IsAboutView;
+
+    partial void OnIsSettingsViewChanged(bool value) => OnPropertyChanged(nameof(IsDownloadsView));
+    partial void OnIsAboutViewChanged(bool value) => OnPropertyChanged(nameof(IsDownloadsView));
+
+    public string VersionText => $"Version {Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.1.0-prealpha"}";
+    public string RepositoryUrl => "https://github.com/objx0/modern-download-manager";
 
     public ObservableCollection<DownloadItemViewModel> Downloads { get; } = new();
 
@@ -60,15 +72,22 @@ public partial class MainViewModel : ObservableObject
         RefreshVisibleDownloads();
     }
 
+    public void RefreshHeaderText() => UpdateHeaderText();
+
     private void RefreshVisibleDownloads()
     {
         VisibleDownloads.Clear();
-        foreach (var vm in FilteredDownloads)
+        foreach (var vm in SearchFilteredDownloads)
             VisibleDownloads.Add(vm);
     }
 
     [ObservableProperty]
     private string newUrlText = string.Empty;
+
+    [ObservableProperty]
+    private string searchText = string.Empty;
+
+    partial void OnSearchTextChanged(string value) => RefreshVisibleDownloads();
 
     [ObservableProperty]
     private string statusText = "Ready";
@@ -184,4 +203,13 @@ public partial class MainViewModel : ObservableObject
         FilterMode.Category => Downloads.Where(d => d.Category == CurrentCategory),
         _ => Downloads
     };
+
+    private IEnumerable<DownloadItemViewModel> SearchFilteredDownloads =>
+        string.IsNullOrWhiteSpace(SearchText)
+            ? FilteredDownloads
+            : FilteredDownloads.Where(d =>
+                d.FileName.Contains(SearchText, StringComparison.OrdinalIgnoreCase) ||
+                d.Url.Contains(SearchText, StringComparison.OrdinalIgnoreCase) ||
+                d.CategoryText.Contains(SearchText, StringComparison.OrdinalIgnoreCase) ||
+                d.StateText.Contains(SearchText, StringComparison.OrdinalIgnoreCase));
 }

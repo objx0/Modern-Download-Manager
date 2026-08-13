@@ -23,6 +23,8 @@ public partial class SettingsViewModel : ObservableObject
         browserCaptureEnabled = settings.BrowserCaptureEnabled;
         showCompletionNotifications = settings.ShowCompletionNotifications;
         showTrayIcon = settings.ShowTrayIcon;
+        preventSleepDuringDownloads = settings.PreventSleepDuringDownloads;
+        startWithWindows = settings.StartWithWindows;
     }
 
     [ObservableProperty]
@@ -51,7 +53,15 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private bool showTrayIcon;
 
+    [ObservableProperty]
+    private bool preventSleepDuringDownloads;
+
+    [ObservableProperty]
+    private bool startWithWindows;
+
     public Action<bool>? TrayIconSettingChanged { get; set; }
+    public Action<bool>? StartupSettingChanged { get; set; }
+    public Action<bool>? PreventSleepSettingChanged { get; set; }
 
     [ObservableProperty]
     private string saveStatusText = string.Empty;
@@ -78,9 +88,13 @@ public partial class SettingsViewModel : ObservableObject
         _settings.BrowserCaptureEnabled = BrowserCaptureEnabled;
         _settings.ShowCompletionNotifications = ShowCompletionNotifications;
         _settings.ShowTrayIcon = ShowTrayIcon;
+        _settings.PreventSleepDuringDownloads = PreventSleepDuringDownloads;
+        _settings.StartWithWindows = StartWithWindows;
 
         await _store.SaveAsync(_settings);
         TrayIconSettingChanged?.Invoke(_settings.ShowTrayIcon);
+        StartupSettingChanged?.Invoke(_settings.StartWithWindows);
+        PreventSleepSettingChanged?.Invoke(_settings.PreventSleepDuringDownloads);
 
         SaveStatusText = concurrencyChanged
             ? "Saved. Restart the app for the concurrent-downloads limit to take effect."

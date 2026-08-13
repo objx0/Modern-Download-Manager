@@ -1,11 +1,10 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Net;
 using System.Net.Http;
-using System.Text;
-using System.Text.Json;
 using System.Threading;
 using System.Runtime.Versioning;
+using Microsoft.Win32;
 using Microsoft.Windows.AppNotifications;
 using Microsoft.Windows.AppNotifications.Builder;
 using Microsoft.UI.Xaml;
@@ -20,12 +19,17 @@ using ModernDownloadManager.Core.Scheduling;
 namespace ModernDownloadManager.App;
 
 /// <summary>
-/// Composition root. Kept intentionally simple (manual wiring, no DI container) —
+/// Composition root. Kept intentionally simple (manual wiring, no DI container) â€”
 /// there are only a handful of services and it keeps startup easy to follow.
 /// </summary>
 [SupportedOSPlatform("windows10.0.17763.0")]
 public partial class App : Application
 {
+    private const uint EsContinuous = 0x80000000;
+    private const uint EsSystemRequired = 0x00000001;
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern uint SetThreadExecutionState(uint flags);
     public static Window? MainAppWindow { get; private set; }
     public static DownloadQueueManager? QueueManager { get; private set; }
     public static AppSettingsStore? SettingsStore { get; private set; }
@@ -68,7 +72,6 @@ public partial class App : Application
         _singleInstanceMutex = new Mutex(true, "Local\\ModernDownloadManager.SingleInstance", out var ownsMutex);
         if (!ownsMutex)
         {
-            await ForwardToExistingInstanceAsync(Environment.GetCommandLineArgs());
             Environment.Exit(0);
             return;
         }
@@ -90,11 +93,12 @@ public partial class App : Application
         var engine = new SegmentedDownloader(httpClient);
         var repository = await DownloadRepository.CreateAsync(Path.Combine(appDataDir, "downloads.db3"));
 
-        // MaxConcurrentDownloads is read once at startup — changing it on the
+        // MaxConcurrentDownloads is read once at startup â€” changing it on the
         // Settings page is persisted immediately but takes effect on next launch,
         // since a live SemaphoreSlim can't safely shrink its capacity mid-run.
         QueueManager = new DownloadQueueManager(engine, repository, _settings.MaxConcurrentDownloads);
         await QueueManager.LoadFromDiskAsync();
+        ConfigureStartup(_settings.StartWithWindows);
 
         try { AppNotificationManager.Default.Register(); }
         catch (Exception) { /* Notifications can be unavailable on older Windows setups. */ }
@@ -108,6 +112,7 @@ public partial class App : Application
         window.AppWindow.Changed += OnWindowChanged;
 
         QueueManager.StateChanged += OnQueueStateChanged;
+        ApplyPreventSleepSetting(_settings.PreventSleepDuringDownloads);
 
         // Serves the browser extension's native-messaging host: if it's already
         // running (this instance), the host hands the download straight over
@@ -116,8 +121,6 @@ public partial class App : Application
 
         // Cold-start case: the native host launched us fresh with a pending
         // download because nothing was listening on the pipe yet.
-        TryHandleLaunchArgs(Environment.GetCommandLineArgs());
-
         window.Closed += (_, _) =>
         {
             _pipeServerCts.Cancel();
@@ -126,24 +129,8 @@ public partial class App : Application
             _singleInstanceMutex?.ReleaseMutex();
             _singleInstanceMutex?.Dispose();
             _singleInstanceMutex = null;
+            SetThreadExecutionState(EsContinuous);
         };
-    }
-
-    private static async Task ForwardToExistingInstanceAsync(string[] commandLineArgs)
-    {
-        const string prefix = "--add-download=";
-        var arg = Array.Find(commandLineArgs, a => a.StartsWith(prefix, StringComparison.Ordinal));
-        if (arg is null)
-            return;
-
-        try
-        {
-            var json = Encoding.UTF8.GetString(Convert.FromBase64String(arg[prefix.Length..]));
-            var request = JsonSerializer.Deserialize<DownloadRequestMessage>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web));
-            if (request is not null && !string.IsNullOrWhiteSpace(request.Url))
-                await DownloadPipe.TrySendWithRetryAsync(request);
-        }
-        catch (FormatException) { }
     }
 
     private void OnWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
@@ -211,6 +198,42 @@ public partial class App : Application
         }
     }
 
+    internal void ConfigureStartup(bool enabled)
+    {
+        try
+        {
+            using var runKey = Registry.CurrentUser.CreateSubKey(
+                "Software\\Microsoft\\Windows\\CurrentVersion\\Run", writable: true);
+            if (runKey is null) return;
+
+            const string valueName = "ModernDownloadManager";
+            if (enabled)
+            {
+                var executable = Environment.ProcessPath;
+                if (!string.IsNullOrWhiteSpace(executable))
+                    runKey.SetValue(valueName, $"\"{executable}\"");
+            }
+            else
+            {
+                runKey.DeleteValue(valueName, throwOnMissingValue: false);
+            }
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write("Startup setting update", ex);
+        }
+    }
+
+    internal void ApplyPreventSleepSetting(bool enabled)
+    {
+        var active = QueueManager?.Items.Any(item => item.State is
+            DownloadState.Connecting or DownloadState.Downloading or DownloadState.Merging) == true;
+        if (enabled && active)
+            SetThreadExecutionState(EsContinuous | EsSystemRequired);
+        else
+            SetThreadExecutionState(EsContinuous);
+    }
+
     internal static void ShowMiniFor(Guid id)
     {
         if (Application.Current is not App app || QueueManager is null)
@@ -234,6 +257,7 @@ public partial class App : Application
 
     private void OnQueueStateChanged(object? sender, DownloadStateChangedEventArgs e)
     {
+        ApplyPreventSleepSetting(_settings?.PreventSleepDuringDownloads == true);
         if (e.State != DownloadState.Completed || QueueManager is null || _settings?.ShowCompletionNotifications != true)
             return;
 
@@ -253,24 +277,6 @@ public partial class App : Application
         if (!HasPendingDownloads())
             _trayIcon?.UpdateTip("Modern Download Manager - Download complete");
     }
-
-    private void TryHandleLaunchArgs(string[] commandLineArgs)
-    {
-        const string prefix = "--add-download=";
-        var arg = Array.Find(commandLineArgs, a => a.StartsWith(prefix, StringComparison.Ordinal));
-        if (arg is null)
-            return;
-
-        try
-        {
-            var json = Encoding.UTF8.GetString(Convert.FromBase64String(arg[prefix.Length..]));
-            var request = JsonSerializer.Deserialize<DownloadRequestMessage>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web));
-            if (request is not null && !string.IsNullOrWhiteSpace(request.Url))
-                _ = EnqueueFromExtensionAsync(request);
-        }
-        catch (FormatException) { /* malformed arg — ignore rather than crash startup */ }
-    }
-
     private async Task EnqueueFromExtensionAsync(DownloadRequestMessage request)
     {
         if (QueueManager is null || _settings is null)
@@ -292,29 +298,9 @@ public partial class App : Application
         if (MainAppWindow is not MainWindow window)
             return;
 
-        var dialogResult = await window.ShowDownloadDialogAsync(request.Url, request.SuggestedFileName);
-        if (dialogResult is null)
+        var item = await window.ShowDownloadDialogAndEnqueueAsync(request.Url, request.SuggestedFileName,
+            request.Referrer, request.Cookie, request.UserAgent);
+        if (item is null)
             return;
-
-        var item = await QueueManager.EnqueueAsync(
-            request.Url,
-            dialogResult.DestinationDirectory,
-            request.SuggestedFileName,
-            _settings.DefaultSpeedLimitBytesPerSecond,
-            _settings.DefaultSegmentCount,
-            request.Referrer,
-            request.Cookie,
-            request.UserAgent,
-            dialogResult.Category,
-            dialogResult.StartNow);
-
-        if (dialogResult.StartNow)
-            ShowMiniFor(item.Id);
-
-        if (dialogResult.RememberCategory)
-        {
-            _settings.CategoryDownloadFolders[dialogResult.Category.ToString()] = dialogResult.DestinationDirectory;
-            await SettingsStore!.SaveAsync(_settings);
-        }
     }
 }

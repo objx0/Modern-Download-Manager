@@ -5,10 +5,10 @@
 
 .EXAMPLE
   .\Setup-TestExtension.ps1
-  .\Setup-TestExtension.ps1 -Browser Edge -SkipBuild
+  .\Setup-TestExtension.ps1 -Browser Firefox -SkipBuild
 #>
 param(
-    [ValidateSet("Chrome", "Edge")]
+    [ValidateSet("Chrome", "Edge", "Firefox")]
     [string]$Browser = "Chrome",
     [ValidateSet("Debug", "Release")]
     [string]$Configuration = "Debug",
@@ -19,7 +19,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = $PSScriptRoot
 $appProject = Join-Path $repoRoot "ModernDownloadManager.App\ModernDownloadManager.App.csproj"
 $hostProject = Join-Path $repoRoot "ModernDownloadManager.NativeHost\ModernDownloadManager.NativeHost.csproj"
-$extensionDir = Join-Path $repoRoot "extension"
+$extensionDir = if ($Browser -eq "Firefox") { Join-Path $repoRoot "extension-firefox" } else { Join-Path $repoRoot "extension" }
 
 if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
     throw "dotnet.exe was not found. Install the .NET 8 SDK first."
@@ -78,7 +78,7 @@ Start-Process -FilePath $deployedAppExe -WorkingDirectory $hostOutput
 Start-Sleep -Milliseconds 1200
 
 $installer = Join-Path $repoRoot "native-host-setup\Install-NativeHost.ps1"
-Write-Host "Registering native messaging for Chrome and Edge..." -ForegroundColor Cyan
+Write-Host "Registering native messaging for Chrome, Edge, and Firefox..." -ForegroundColor Cyan
 & $installer -NativeHostExePath (Join-Path $hostOutput "ModernDownloadManager.NativeHost.exe")
 if ($LASTEXITCODE -ne 0) { throw "Native host registration failed." }
 
@@ -88,30 +88,36 @@ $browserExe = if ($Browser -eq "Chrome") {
         (Join-Path ${env:ProgramFiles(x86)} "Google\Chrome\Application\chrome.exe"),
         (Join-Path $env:LOCALAPPDATA "Google\Chrome\Application\chrome.exe")
     )
-} else {
+} elseif ($Browser -eq "Edge") {
     @(
         (Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe"),
         (Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"),
         (Join-Path $env:LOCALAPPDATA "Microsoft\Edge\Application\msedge.exe")
     )
+} else {
+    @(
+        (Join-Path $env:ProgramFiles "Mozilla Firefox\firefox.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Mozilla Firefox\firefox.exe"),
+        (Join-Path $env:LOCALAPPDATA "Mozilla Firefox\firefox.exe")
+    )
 }
 $browserPath = $browserExe | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
-if (-not $browserPath) { throw "$Browser was not found. Install it or run with -Browser Chrome/Edge." }
+if (-not $browserPath) { throw "$Browser was not found. Install it or run with -Browser Chrome, Edge, or Firefox." }
 
 # A separate profile makes this safe to repeat and prevents interference with
 # the user's normal browser profile. Close the test browser before rerunning.
 $profileDir = Join-Path $env:LOCALAPPDATA "ModernDownloadManager\browser-test-profile-$($Browser.ToLowerInvariant())"
 New-Item -ItemType Directory -Force -Path $profileDir | Out-Null
-$browserArgs = @(
-    "--user-data-dir=$profileDir",
-    "--load-extension=$extensionDir",
-    "--no-first-run",
-    "--no-default-browser-check"
-)
+$browserArgs = if ($Browser -eq "Firefox") {
+    @("-profile", $profileDir, "-no-remote")
+} else {
+    @("--user-data-dir=$profileDir", "--load-extension=$extensionDir", "--no-first-run", "--no-default-browser-check")
+}
 
 Write-Host "Launching $Browser test profile with the extension loaded..." -ForegroundColor Green
 Start-Process -FilePath $browserPath -ArgumentList $browserArgs
 Write-Host "" 
 Write-Host "Test profile: $profileDir" -ForegroundColor DarkGray
+if ($Browser -eq "Firefox") { Write-Host "In Firefox, open about:debugging#/runtime/this-firefox and load extension-firefox\manifest.json as a temporary add-on." -ForegroundColor Yellow }
 Write-Host "Use the download URL above, or right-click a downloadable link and choose 'Download with Modern Download Manager'." -ForegroundColor Green
 Write-Host "Close this test browser before running the script again." -ForegroundColor Yellow

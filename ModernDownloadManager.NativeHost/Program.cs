@@ -31,10 +31,11 @@ internal static class Program
 
             if (!delivered)
             {
-                LaunchAppWithPendingDownload(request);
+                LaunchApp();
+                delivered = await DownloadPipe.TrySendWithRetryAsync(request, attempts: 20, timeoutMilliseconds: 500);
             }
 
-            await WriteMessageAsync(new { status = delivered ? "queued" : "launched" });
+            await WriteMessageAsync(new { status = delivered ? "queued" : "not-ready" });
         }
         catch (Exception ex)
         {
@@ -44,11 +45,8 @@ internal static class Program
         }
     }
 
-    private static void LaunchAppWithPendingDownload(DownloadRequestMessage request)
+    private static void LaunchApp()
     {
-        var json = JsonSerializer.Serialize(request, new JsonSerializerOptions(JsonSerializerDefaults.Web));
-        var encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(json));
-
         var appPath = Path.Combine(AppContext.BaseDirectory, "ModernDownloadManager.App.exe");
         if (!File.Exists(appPath))
             throw new FileNotFoundException(
@@ -58,7 +56,6 @@ internal static class Program
         Process.Start(new ProcessStartInfo
         {
             FileName = appPath,
-            Arguments = $"--add-download={encoded}",
             UseShellExecute = false
         });
     }

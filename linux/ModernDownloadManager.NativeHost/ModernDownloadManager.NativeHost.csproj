@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>ModernDownloadManager.NativeHost</RootNamespace>
+    <AssemblyName>ModernDownloadManager.NativeHost</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../ModernDownloadManager.Core/ModernDownloadManager.Core.csproj" />
+  </ItemGroup>
+</Project>

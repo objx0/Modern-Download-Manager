@@ -139,9 +139,9 @@ then:
   typo in the manifest path), Chrome just returns `chrome.runtime.lastError`
   silently — the toolbar badge turns red (`!`) for 3 seconds as the only
   signal. Worth adding a proper notification/toast later.
-- Cookie forwarding sends *all* cookies for the URL's origin as a flat header,
-  which is enough for most authenticated downloads but doesn't handle
-  same-site/partitioned cookie edge cases perfectly.
+- Cookie forwarding sends *all* cookies for the URL's origin as a flat header
+  during the active request, but cookies are no longer persisted in SQLite.
+  Same-site/partitioned cookie edge cases still depend on browser behavior.
 - No uninstall script yet — removing the registry keys and unloading the
   extension is manual for now.
 

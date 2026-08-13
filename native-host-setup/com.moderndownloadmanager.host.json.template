@@ -5,5 +5,8 @@
   "type": "stdio",
   "allowed_origins": [
     "chrome-extension://gpflfhfbgjbijbocjdjngdfkohaojmaf/"
+  ],
+  "allowed_extensions": [
+    "modern-download-manager@local"
   ]
 }

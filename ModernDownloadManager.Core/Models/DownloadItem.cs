@@ -40,10 +40,13 @@ public class DownloadItem
 
     public int SegmentCount { get; set; } = 8;
 
-    /// <summary>Bytes/sec cap for this item; 0 = unlimited (subject to global cap).</summary>
+    /// <summary>Bytes/sec cap for this item; 0 = unlimited.</summary>
     public long SpeedLimitBytesPerSecond { get; set; }
 
     public string? ReferrerUrl { get; set; }
+    /// <summary>Authentication cookies are intentionally session-only and are
+    /// never written to the download history database.</summary>
+    [Ignore]
     public string? CookieHeader { get; set; }
     public string? UserAgent { get; set; }
 

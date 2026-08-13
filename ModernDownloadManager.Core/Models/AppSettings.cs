@@ -29,5 +29,11 @@ public class AppSettings
 
     public bool ShowTrayIcon { get; set; } = true;
 
+    /// <summary>Keep Windows awake while one or more downloads are active.</summary>
+    public bool PreventSleepDuringDownloads { get; set; } = true;
+
+    /// <summary>Launch the unpackaged desktop app when the user signs in.</summary>
+    public bool StartWithWindows { get; set; }
+
     public Dictionary<string, string> CategoryDownloadFolders { get; set; } = new();
 }

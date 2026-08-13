@@ -37,6 +37,9 @@ public partial class DownloadItemViewModel : ObservableObject
     public string Url => Model.Url;
     public DownloadCategory Category => Model.Category;
     public string CategoryText => Category.ToString();
+    public string DownloadedDateText => Model.CompletedAt is { } completed
+        ? $"Downloaded {completed.ToLocalTime():MMM d, yyyy h:mm tt}"
+        : string.Empty;
 
     [ObservableProperty]
     private double progressPercent;
@@ -70,6 +73,15 @@ public partial class DownloadItemViewModel : ObservableObject
         StateText = newState.ToString();
         if (newState is DownloadState.Completed)
         {
+            // Completion is authoritative. The final throttled progress event can
+            // arrive before merge finishes, so never leave a completed row showing
+            // the last partial byte count.
+            if (Model.TotalBytes > 0)
+            {
+                Model.DownloadedBytes = Model.TotalBytes;
+                ProgressPercent = 100;
+                SizeText = $"{FormatBytes(Model.TotalBytes)} / {FormatBytes(Model.TotalBytes)}";
+            }
             SpeedText = string.Empty;
             EtaText = string.Empty;
         }
@@ -83,6 +95,8 @@ public partial class DownloadItemViewModel : ObservableObject
         OnPropertyChanged(nameof(CanOpenFile));
         OnPropertyChanged(nameof(CanOpenFolder));
         OnPropertyChanged(nameof(CanShowMini));
+        OnPropertyChanged(nameof(CanCancel));
+        OnPropertyChanged(nameof(DownloadedDateText));
     }
 
     public bool CanPause => State is DownloadState.Downloading or DownloadState.Connecting or DownloadState.Queued;
@@ -90,6 +104,7 @@ public partial class DownloadItemViewModel : ObservableObject
     public bool CanOpenFile => State == DownloadState.Completed && File.Exists(Model.FullPath);
     public bool CanOpenFolder => Directory.Exists(Model.DestinationDirectory);
     public bool CanShowMini => State is DownloadState.Queued or DownloadState.Connecting or DownloadState.Downloading or DownloadState.Merging or DownloadState.Paused;
+    public bool CanCancel => State is not DownloadState.Completed and not DownloadState.Cancelled;
 
     [RelayCommand]
     private Task Pause() => _queue.PauseAsync(Id);

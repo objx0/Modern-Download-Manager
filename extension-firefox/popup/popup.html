@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { color-scheme: light dark; --accent: #2563eb; --text: #172033; --muted: #64748b; --surface: #ffffff; --subtle: #f1f5f9; }
+    @media (prefers-color-scheme: dark) { :root { --text: #f4f7fb; --muted: #a9b5c7; --surface: #202733; --subtle: #2b3544; } }
+    * { box-sizing: border-box; } body { width: 320px; margin: 0; padding: 18px; background: var(--surface); color: var(--text); font: 13px/1.4 "Segoe UI", system-ui, sans-serif; }
+    .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; } .mark { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 9px; background: var(--accent); color: white; font-size: 17px; font-weight: 700; }
+    h1 { margin: 0; font-size: 15px; font-weight: 650; } .subtitle { margin: 2px 0 0; color: var(--muted); font-size: 11px; } .card { padding: 14px; border: 1px solid color-mix(in srgb, var(--muted) 22%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--subtle) 65%, transparent); }
+    label { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-weight: 600; } input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--accent); } input[type="number"] { width: 68px; padding: 6px 8px; border: 1px solid color-mix(in srgb, var(--muted) 35%, transparent); border-radius: 7px; background: var(--surface); color: var(--text); text-align: right; }
+    .field { margin-top: 14px; } .hint { margin: 7px 0 0; color: var(--muted); font-size: 11px; } #status { min-height: 16px; margin-top: 12px; color: #16a34a; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <div class="brand"><div class="mark">↓</div><div><h1>Modern Download Manager</h1><div class="subtitle">Browser integration</div></div></div>
+  <div class="card"><label>Auto-capture downloads <input type="checkbox" id="autoIntercept" /></label><p class="hint">Send browser downloads to the manager automatically. Turn this off to use the context menu instead.</p><div class="field"><label>Capture files larger than <span><input type="number" id="minimumCaptureSizeMB" min="0" step="1" /> MB</span></label><p class="hint">Smaller files stay in the browser. Use 0 for all sizes.</p></div></div>
+  <div id="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>

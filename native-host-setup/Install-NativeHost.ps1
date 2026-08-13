@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <##
 .SYNOPSIS
-  Registers the Modern Download Manager native messaging host for Chrome and Edge.
+  Registers the Modern Download Manager native messaging host for Chrome, Edge, and Firefox.
 #>
 param(
     [string]$NativeHostExePath = ""
@@ -49,7 +49,8 @@ function Register-Browser($registryRoot, $browserLabel) {
 
 Register-Browser "HKCU:\Software\Google\Chrome\NativeMessagingHosts" "Chrome"
 Register-Browser "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts" "Edge"
+Register-Browser "HKCU:\Software\Mozilla\NativeMessagingHosts" "Firefox"
 
 Write-Host ""
 Write-Host "Native messaging registration complete."
-Write-Host "Load the extension from the extension folder in chrome://extensions or edge://extensions."
+Write-Host "Load the Chromium extension from chrome://extensions or edge://extensions, or load extension-firefox in Firefox."

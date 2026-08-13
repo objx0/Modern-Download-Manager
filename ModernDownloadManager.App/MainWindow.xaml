@@ -1,4 +1,4 @@
-<Window
+﻿<Window
     x:Class="ModernDownloadManager.App.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -15,7 +15,7 @@
             </Border>
             <StackPanel Grid.Column="2" Margin="10,0,0,0" VerticalAlignment="Center">
                 <TextBlock Text="Modern Download Manager" FontWeight="SemiBold"/>
-                <TextBlock Text="{x:Bind ViewModel.HeaderText, Mode=OneWay}" FontSize="11" Opacity="0.65"/>
+                <TextBlock Text="{Binding HeaderText, Mode=OneWay}" FontSize="11" Opacity="0.65"/>
             </StackPanel>
         </Grid>
 
@@ -32,22 +32,27 @@
                 <NavigationViewItem Content="Programs" Tag="Category:Programs"><NavigationViewItem.Icon><FontIcon Glyph="&#xE756;"/></NavigationViewItem.Icon></NavigationViewItem>
                 <NavigationViewItem Content="Images" Tag="Category:Images"><NavigationViewItem.Icon><FontIcon Glyph="&#xEB9F;"/></NavigationViewItem.Icon></NavigationViewItem>
             </NavigationView.MenuItems>
+            <NavigationView.FooterMenuItems>
+                <NavigationViewItem Content="About" Tag="About"><NavigationViewItem.Icon><FontIcon Glyph="&#xE946;"/></NavigationViewItem.Icon></NavigationViewItem>
+            </NavigationView.FooterMenuItems>
 
             <Grid Padding="32,26,32,24">
-                <Grid Visibility="{Binding IsSettingsView, Converter={StaticResource InverseBoolToVisibility}}">
-                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <Grid Visibility="{Binding IsDownloadsView, Converter={StaticResource BoolToVisibility}}">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                     <StackPanel Grid.Row="0">
-                        <TextBlock Text="{x:Bind ViewModel.HeaderText, Mode=OneWay}" Style="{StaticResource SectionHeaderStyle}"/>
+                        <TextBlock Text="{Binding HeaderText, Mode=OneWay}" Style="{StaticResource SectionHeaderStyle}"/>
                         <TextBlock Text="Fast, resumable downloads with everything important in view." Style="{StaticResource PageIntroStyle}"/>
                     </StackPanel>
 
                     <Grid Grid.Row="1" Margin="0,0,0,22" ColumnSpacing="10">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                        <TextBox Grid.Column="0" PlaceholderText="Paste a download URL" Text="{x:Bind ViewModel.NewUrlText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBox Grid.Column="0" PlaceholderText="Paste a download URL" Text="{Binding NewUrlText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                         <Button Grid.Column="1" Content="Add download" Style="{StaticResource AccentButtonStyle}" Click="AddDownload_Click"/>
                     </Grid>
 
-                    <ListView Grid.Row="2" ItemsSource="{x:Bind ViewModel.VisibleDownloads}" SelectionMode="None" BorderThickness="0" Padding="0">
+                    <TextBox Grid.Row="2" Text="{Binding SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="Search downloads" Margin="0,0,0,14"/>
+
+                    <ListView Grid.Row="3" ItemsSource="{Binding VisibleDownloads}" SelectionMode="None" BorderThickness="0" Padding="0">
                         <ListView.ItemTemplate>
                             <DataTemplate x:DataType="vm:DownloadItemViewModel">
                                 <Border Style="{StaticResource DownloadCardStyle}">
@@ -57,66 +62,88 @@
                                             <FontIcon Glyph="&#xE7C5;" FontSize="19" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                         </Border>
                                         <StackPanel Grid.Column="1" Spacing="4">
-                                            <TextBlock Text="{x:Bind FileName, Mode=OneWay}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-                                            <TextBlock Text="{x:Bind CategoryText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}"/>
-                                            <ProgressBar Value="{x:Bind ProgressPercent, Mode=OneWay}" Maximum="100" Margin="0,4,0,0"/>
+                                            <TextBlock Text="{Binding FileName, Mode=OneWay}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock Text="{Binding CategoryText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}"/>
+                                            <ProgressBar Value="{Binding ProgressPercent, Mode=OneWay}" Maximum="100" Margin="0,4,0,0"/>
                                             <StackPanel Orientation="Horizontal" Spacing="14">
-                                                <TextBlock Text="{x:Bind SizeText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}"/>
-                                                <TextBlock Text="{x:Bind SpeedText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}"/>
-                                                <TextBlock Text="{x:Bind EtaText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}"/>
-                                                <TextBlock Text="{x:Bind StateText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}"/>
+                                                <TextBlock Text="{Binding SizeText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}"/>
+                                                <TextBlock Text="{Binding SpeedText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}"/>
+                                                <TextBlock Text="{Binding EtaText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}"/>
+                                                <TextBlock Text="{Binding StateText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}"/>
                                             </StackPanel>
+                                            <TextBlock Text="{Binding DownloadedDateText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}"/>
                                         </StackPanel>
                                         <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Top">
-                                            <Button Style="{StaticResource DownloadIconButtonStyle}" IsEnabled="{x:Bind CanPause, Mode=OneWay}" Command="{x:Bind PauseCommand}" ToolTipService.ToolTip="Pause"><FontIcon Glyph="&#xE769;"/></Button>
-                                            <Button Style="{StaticResource DownloadIconButtonStyle}" IsEnabled="{x:Bind CanResume, Mode=OneWay}" Command="{x:Bind ResumeCommand}" ToolTipService.ToolTip="Resume"><FontIcon Glyph="&#xE768;"/></Button>
-                                            <Button Style="{StaticResource DownloadIconButtonStyle}" IsEnabled="{x:Bind CanOpenFile, Mode=OneWay}" Command="{x:Bind OpenFileCommand}" ToolTipService.ToolTip="Open file"><FontIcon Glyph="&#xE8A5;"/></Button>
-                                            <Button Style="{StaticResource DownloadIconButtonStyle}" IsEnabled="{x:Bind CanOpenFolder, Mode=OneWay}" Command="{x:Bind OpenFolderCommand}" ToolTipService.ToolTip="Open folder"><FontIcon Glyph="&#xE8B7;"/></Button>
-                                            <Button Style="{StaticResource DownloadIconButtonStyle}" Command="{x:Bind RemoveCommand}" ToolTipService.ToolTip="Remove"><FontIcon Glyph="&#xE74D;"/></Button>
+                                            <Button Style="{StaticResource DownloadIconButtonStyle}" IsEnabled="{Binding CanPause, Mode=OneWay}" Command="{Binding PauseCommand}" ToolTipService.ToolTip="Pause"><FontIcon Glyph="&#xE769;"/></Button>
+                                            <Button Style="{StaticResource DownloadIconButtonStyle}" IsEnabled="{Binding CanResume, Mode=OneWay}" Command="{Binding ResumeCommand}" ToolTipService.ToolTip="Resume"><FontIcon Glyph="&#xE768;"/></Button>
+                                            <Button Style="{StaticResource DownloadIconButtonStyle}" IsEnabled="{Binding CanOpenFile, Mode=OneWay}" Command="{Binding OpenFileCommand}" ToolTipService.ToolTip="Open file"><FontIcon Glyph="&#xE8A5;"/></Button>
+                                            <Button Style="{StaticResource DownloadIconButtonStyle}" IsEnabled="{Binding CanOpenFolder, Mode=OneWay}" Command="{Binding OpenFolderCommand}" ToolTipService.ToolTip="Open folder"><FontIcon Glyph="&#xE8B7;"/></Button>
+                                            <Button Style="{StaticResource DownloadIconButtonStyle}" Command="{Binding RemoveCommand}" ToolTipService.ToolTip="Remove"><FontIcon Glyph="&#xE74D;"/></Button>
                                         </StackPanel>
                                     </Grid>
                                 </Border>
                             </DataTemplate>
                         </ListView.ItemTemplate>
                     </ListView>
-                    <TextBlock Grid.Row="3" Text="{x:Bind ViewModel.StatusText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}" Margin="0,8,0,0"/>
+                    <TextBlock Grid.Row="4" Text="{Binding StatusText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}" Margin="0,8,0,0"/>
+                </Grid>
+
+                <Grid Visibility="{Binding IsAboutView, Converter={StaticResource BoolToVisibility}}">
+                    <StackPanel MaxWidth="680" HorizontalAlignment="Left" Spacing="10">
+                        <TextBlock Text="About Modern Download Manager" Style="{StaticResource SectionHeaderStyle}"/>
+                        <TextBlock Text="A fast, resumable download manager for Windows." Style="{StaticResource PageIntroStyle}"/>
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel Spacing="12">
+                                <TextBlock Text="Modern Download Manager" FontSize="20" FontWeight="SemiBold"/>
+                                <TextBlock Text="{Binding VersionText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}"/>
+                                <TextBlock Text="Built with WinUI 3 and .NET. Downloads are persisted locally and can be paused and resumed." TextWrapping="Wrap" Style="{StaticResource MetaTextStyle}"/>
+                                <Button Content="Open GitHub repository" Style="{StaticResource AccentButtonStyle}" Click="OpenRepository_Click" HorizontalAlignment="Left"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
                 </Grid>
 
                 <ScrollViewer Visibility="{Binding IsSettingsView, Converter={StaticResource BoolToVisibility}}">
-                    <StackPanel MaxWidth="700" HorizontalAlignment="Left" Spacing="4">
+                    <StackPanel MaxWidth="760" HorizontalAlignment="Left" Spacing="4">
                         <TextBlock Text="Settings" Style="{StaticResource SectionHeaderStyle}"/>
-                        <TextBlock Text="Control how downloads are captured, stored, and completed." Style="{StaticResource PageIntroStyle}"/>
-
-                        <TextBlock Text="Browser capture" Style="{StaticResource SettingsGroupStyle}"/>
-                        <Border Style="{StaticResource SettingsCardStyle}">
-                            <StackPanel Spacing="12">
-                                <ToggleSwitch Header="Send browser downloads to Modern Download Manager" IsOn="{x:Bind ViewModel.Settings.BrowserCaptureEnabled, Mode=TwoWay}"/>
-                                <Grid ColumnSpacing="12">
-                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="150"/></Grid.ColumnDefinitions>
-                                    <StackPanel><TextBlock Text="Minimum capture size" FontWeight="SemiBold"/><TextBlock Text="Files smaller than this stay in the browser. Use 0 to capture every size." Style="{StaticResource MetaTextStyle}" TextWrapping="Wrap"/></StackPanel>
-                                    <NumberBox Grid.Column="1" Value="{x:Bind ViewModel.Settings.MinimumCaptureSizeMB, Mode=TwoWay}" Minimum="0" SpinButtonPlacementMode="Inline" PlaceholderText="0"/>
-                                </Grid>
-                                <TextBlock Text="Size is measured in MB and is applied to known browser download sizes. Unknown sizes are checked again by the app." Style="{StaticResource MetaTextStyle}" TextWrapping="Wrap"/>
-                            </StackPanel>
-                        </Border>
-
-                        <TextBlock Text="Downloads" Style="{StaticResource SettingsGroupStyle}"/>
-                        <Border Style="{StaticResource SettingsCardStyle}">
-                            <StackPanel>
-                                <TextBlock Text="Default download folder" Style="{StaticResource FieldLabelStyle}"/>
-                                <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox Grid.Column="0" Text="{x:Bind ViewModel.Settings.DefaultDownloadFolder, Mode=TwoWay}"/><Button Grid.Column="1" Content="Browse" Click="BrowseFolder_Click"/></Grid>
-                                <TextBlock Text="Max simultaneous downloads" Style="{StaticResource FieldLabelStyle}"/>
-                                <NumberBox Value="{x:Bind ViewModel.Settings.MaxConcurrentDownloads, Mode=TwoWay}" Minimum="1" Maximum="16" SpinButtonPlacementMode="Inline" HorizontalAlignment="Left" Width="160"/>
-                                <TextBlock Text="Default speed limit (MB/s, 0 = unlimited)" Style="{StaticResource FieldLabelStyle}"/>
-                                <NumberBox Value="{x:Bind ViewModel.Settings.DefaultSpeedLimitMBps, Mode=TwoWay}" Minimum="0" SpinButtonPlacementMode="Inline" HorizontalAlignment="Left" Width="160"/>
-                                <TextBlock Text="Connections per download" Style="{StaticResource FieldLabelStyle}"/>
-                                <NumberBox Value="{x:Bind ViewModel.Settings.DefaultSegmentCount, Mode=TwoWay}" Minimum="1" Maximum="16" SpinButtonPlacementMode="Inline" HorizontalAlignment="Left" Width="160"/>
-                                <ToggleSwitch Header="Show a notification when a download completes" IsOn="{x:Bind ViewModel.Settings.ShowCompletionNotifications, Mode=TwoWay}" Margin="0,14,0,0"/>
-                                <ToggleSwitch Header="Show a tray icon while the manager is running" IsOn="{x:Bind ViewModel.Settings.ShowTrayIcon, Mode=TwoWay}" Margin="0,8,0,0"/>
-                            </StackPanel>
-                        </Border>
-                        <Button Content="Save settings" Style="{StaticResource AccentButtonStyle}" Command="{x:Bind ViewModel.Settings.SaveCommand}" Margin="0,14,0,0" HorizontalAlignment="Left"/>
-                        <TextBlock Text="{x:Bind ViewModel.Settings.SaveStatusText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}" Margin="0,8,0,0"/>
+                        <TextBlock Text="Organized controls for capture, downloads, and app behavior." Style="{StaticResource PageIntroStyle}" Margin="0,0,0,10"/>
+                        <TabView TabWidthMode="Equal" IsAddTabButtonVisible="False">
+                            <TabViewItem Header="Browser capture">
+                                <StackPanel Spacing="12" Margin="0,18,12,0">
+                                    <ToggleSwitch Header="Send browser downloads to Modern Download Manager" IsOn="{Binding Settings.BrowserCaptureEnabled, Mode=TwoWay}"/>
+                                    <Grid ColumnSpacing="12">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="150"/></Grid.ColumnDefinitions>
+                                        <StackPanel><TextBlock Text="Minimum capture size" FontWeight="SemiBold"/><TextBlock Text="Files smaller than this stay in the browser. Use 0 to capture every size." Style="{StaticResource MetaTextStyle}" TextWrapping="Wrap"/></StackPanel>
+                                        <NumberBox Grid.Column="1" Value="{Binding Settings.MinimumCaptureSizeMB, Mode=TwoWay}" Minimum="0" SpinButtonPlacementMode="Inline" PlaceholderText="0"/>
+                                    </Grid>
+                                    <TextBlock Text="Size is measured in MB and applies to known browser download sizes." Style="{StaticResource MetaTextStyle}" TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </TabViewItem>
+                            <TabViewItem Header="Downloads">
+                                <StackPanel Spacing="10" Margin="0,18,12,0">
+                                    <TextBlock Text="Default download folder" Style="{StaticResource FieldLabelStyle}"/>
+                                    <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox Grid.Column="0" Text="{Binding Settings.DefaultDownloadFolder, Mode=TwoWay}"/><Button Grid.Column="1" Content="Browse" Click="BrowseFolder_Click"/></Grid>
+                                    <TextBlock Text="Max simultaneous downloads" Style="{StaticResource FieldLabelStyle}"/>
+                                    <NumberBox Value="{Binding Settings.MaxConcurrentDownloads, Mode=TwoWay}" Minimum="1" Maximum="16" SpinButtonPlacementMode="Inline" HorizontalAlignment="Left" Width="160"/>
+                                    <TextBlock Text="Default speed limit (MB/s, 0 = unlimited)" Style="{StaticResource FieldLabelStyle}"/>
+                                    <NumberBox Value="{Binding Settings.DefaultSpeedLimitMBps, Mode=TwoWay}" Minimum="0" SpinButtonPlacementMode="Inline" HorizontalAlignment="Left" Width="160"/>
+                                    <TextBlock Text="Connections per download" Style="{StaticResource FieldLabelStyle}"/>
+                                    <NumberBox Value="{Binding Settings.DefaultSegmentCount, Mode=TwoWay}" Minimum="1" Maximum="16" SpinButtonPlacementMode="Inline" HorizontalAlignment="Left" Width="160"/>
+                                </StackPanel>
+                            </TabViewItem>
+                            <TabViewItem Header="Behavior">
+                                <StackPanel Spacing="12" Margin="0,18,12,0">
+                                    <ToggleSwitch Header="Keep the PC awake while downloads are active" IsOn="{Binding Settings.PreventSleepDuringDownloads, Mode=TwoWay}"/>
+                                    <TextBlock Text="Prevents Windows from entering sleep while the queue is downloading. The request is released when downloads finish." Style="{StaticResource MetaTextStyle}" TextWrapping="Wrap"/>
+                                    <ToggleSwitch Header="Start Modern Download Manager with Windows" IsOn="{Binding Settings.StartWithWindows, Mode=TwoWay}"/>
+                                    <TextBlock Text="Adds the app to your per-user Windows startup applications. No administrator permission is required." Style="{StaticResource MetaTextStyle}" TextWrapping="Wrap"/>
+                                    <ToggleSwitch Header="Show a notification when a download completes" IsOn="{Binding Settings.ShowCompletionNotifications, Mode=TwoWay}" Margin="0,8,0,0"/>
+                                    <ToggleSwitch Header="Show a tray icon while the manager is running" IsOn="{Binding Settings.ShowTrayIcon, Mode=TwoWay}"/>
+                                </StackPanel>
+                            </TabViewItem>
+                        </TabView>
+                        <Button Content="Save settings" Style="{StaticResource AccentButtonStyle}" Command="{Binding Settings.SaveCommand}" Margin="0,18,0,0" HorizontalAlignment="Left"/>
+                        <TextBlock Text="{Binding Settings.SaveStatusText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}" Margin="0,8,0,0"/>
                     </StackPanel>
                 </ScrollViewer>
             </Grid>

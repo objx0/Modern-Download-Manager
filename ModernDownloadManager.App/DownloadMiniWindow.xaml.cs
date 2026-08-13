@@ -34,7 +34,7 @@ public sealed partial class DownloadMiniWindow : Window
         ViewModel.ApplyState(item.State);
         ViewModel.ApplyProgress(item.DownloadedBytes, item.TotalBytes, 0, null);
 
-        AppWindow.Resize(new Windows.Graphics.SizeInt32(560, 280));
+        AppWindow.Resize(new Windows.Graphics.SizeInt32(560, 320));
         InstallCloseHandler();
         Closed += OnClosed;
         _queue.ProgressChanged += OnProgressChanged;
@@ -46,6 +46,9 @@ public sealed partial class DownloadMiniWindow : Window
     {
         AppWindow.Show();
         Activate();
+        var hwnd = WindowNative.GetWindowHandle(this);
+        ShowWindow(hwnd, 9);
+        SetForegroundWindow(hwnd);
     }
 
     private void OnProgressChanged(object? sender, DownloadProgressEventArgs e)
@@ -105,6 +108,9 @@ public sealed partial class DownloadMiniWindow : Window
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(nint hwnd);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool ShowWindow(nint hwnd, int command);
 
     private delegate nint WindowProcDelegate(nint hwnd, uint message, nint wParam, nint lParam);
 

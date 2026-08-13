@@ -17,6 +17,8 @@ public sealed class DownloadQueueManager : IAsyncDisposable
     private readonly SemaphoreSlim _concurrencyGate;
     private readonly ConcurrentDictionary<Guid, DownloadItem> _items = new();
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _itemCancellation = new();
+    private readonly ConcurrentDictionary<Guid, Task> _runningTasks = new();
+    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _lifecycleLocks = new();
 
     public int MaxConcurrentDownloads { get; }
 
@@ -54,6 +56,11 @@ public sealed class DownloadQueueManager : IAsyncDisposable
                 item.State = DownloadState.Paused;
 
             _items[item.Id] = item;
+            _itemCancellation[item.Id] = new CancellationTokenSource();
+            _lifecycleLocks[item.Id] = new SemaphoreSlim(1, 1);
+            if (item.State is DownloadState.Completed or DownloadState.Cancelled)
+                CleanupTempFiles(item);
+            await _repository.UpsertAsync(item);
         }
     }
 
@@ -108,12 +115,21 @@ public sealed class DownloadQueueManager : IAsyncDisposable
 
         _items[item.Id] = item;
         _itemCancellation[item.Id] = new CancellationTokenSource();
+        _lifecycleLocks[item.Id] = new SemaphoreSlim(1, 1);
         await _repository.UpsertAsync(item);
         ItemAdded?.Invoke(this, item);
 
         if (startImmediately)
-            _ = RunWhenSlotAvailableAsync(item); // fire-and-forget; queue drains itself
+            StartQueuedRun(item);
         return item;
+    }
+
+    private void StartQueuedRun(DownloadItem item)
+    {
+        var run = RunWhenSlotAvailableAsync(item);
+        _runningTasks[item.Id] = run;
+        _ = run.ContinueWith(completedTask => _runningTasks.TryRemove(item.Id, out var removed),
+            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
     private static string? SanitizeFileName(string? fileName)
@@ -159,19 +175,20 @@ public sealed class DownloadQueueManager : IAsyncDisposable
         if (!_items.TryGetValue(id, out var item))
             return;
 
+        using var guard = await AcquireLifecycleLockAsync(id);
+
         if (item.State == DownloadState.Queued)
         {
+            if (_itemCancellation.TryGetValue(id, out var queuedCts))
+                queuedCts.Cancel();
             item.State = DownloadState.Paused;
-            StateChanged?.Invoke(this, new DownloadStateChangedEventArgs
-            {
-                DownloadId = id,
-                State = DownloadState.Paused
-            });
-            await _repository.UpsertAsync(item);
+            await PersistStateAsync(item, DownloadState.Paused);
             return;
         }
 
         await _engine.PauseAsync(id);
+        if (_runningTasks.TryGetValue(id, out var running))
+            await IgnoreCompletionAsync(running);
     }
 
     public async Task CancelAsync(Guid id)
@@ -179,35 +196,39 @@ public sealed class DownloadQueueManager : IAsyncDisposable
         if (!_items.TryGetValue(id, out var item))
             return;
 
+        using var guard = await AcquireLifecycleLockAsync(id);
+
         if (_itemCancellation.TryGetValue(id, out var cts))
             cts.Cancel();
 
         if (item.State is DownloadState.Queued or DownloadState.Paused or DownloadState.Failed)
         {
             item.State = DownloadState.Cancelled;
-            StateChanged?.Invoke(this, new DownloadStateChangedEventArgs
-            {
-                DownloadId = id,
-                State = DownloadState.Cancelled
-            });
-            await _repository.UpsertAsync(item);
+            await PersistStateAsync(item, DownloadState.Cancelled);
+            CleanupTempFiles(item);
             return;
         }
 
         await _engine.CancelAsync(id);
+        if (_runningTasks.TryGetValue(id, out var running))
+            await IgnoreCompletionAsync(running);
+        CleanupTempFiles(item);
     }
 
-    public Task ResumeAsync(Guid id)
+    public async Task ResumeAsync(Guid id)
     {
-        if (_items.TryGetValue(id, out var item) && item.State is DownloadState.Paused or DownloadState.Failed)
-        {
-            if (_itemCancellation.TryRemove(id, out var previous))
-                previous.Dispose();
-            _itemCancellation[id] = new CancellationTokenSource();
-            item.State = DownloadState.Queued;
-            return RunWhenSlotAvailableAsync(item);
-        }
-        return Task.CompletedTask;
+        if (!_items.TryGetValue(id, out var item) || item.State is not (DownloadState.Paused or DownloadState.Failed))
+            return;
+
+        using var guard = await AcquireLifecycleLockAsync(id);
+        if (_runningTasks.TryGetValue(id, out var previousRun))
+            await IgnoreCompletionAsync(previousRun);
+        if (_itemCancellation.TryRemove(id, out var previous))
+            previous.Dispose();
+        _itemCancellation[id] = new CancellationTokenSource();
+        item.State = DownloadState.Queued;
+        await PersistStateAsync(item, DownloadState.Queued);
+        StartQueuedRun(item);
     }
 
     public async Task RemoveAsync(Guid id, bool deleteFile = false)
@@ -219,8 +240,11 @@ public sealed class DownloadQueueManager : IAsyncDisposable
             await _repository.DeleteAsync(item);
             if (_itemCancellation.TryRemove(id, out var cts))
                 cts.Dispose();
+            if (_lifecycleLocks.TryRemove(id, out var lifecycleLock))
+                lifecycleLock.Dispose();
             if (deleteFile && File.Exists(item.FullPath))
                 File.Delete(item.FullPath);
+            CleanupTempFiles(item);
         }
     }
 
@@ -230,6 +254,45 @@ public sealed class DownloadQueueManager : IAsyncDisposable
             cts.Cancel();
         foreach (var cts in _itemCancellation.Values)
             cts.Dispose();
+        foreach (var lifecycleLock in _lifecycleLocks.Values)
+            lifecycleLock.Dispose();
         return _repository.DisposeAsync();
+    }
+
+    private async ValueTask<IDisposable> AcquireLifecycleLockAsync(Guid id)
+    {
+        var lifecycleLock = _lifecycleLocks.GetOrAdd(id, _ => new SemaphoreSlim(1, 1));
+        await lifecycleLock.WaitAsync();
+        return new Releaser(lifecycleLock);
+    }
+
+    private async Task PersistStateAsync(DownloadItem item, DownloadState state)
+    {
+        StateChanged?.Invoke(this, new DownloadStateChangedEventArgs { DownloadId = item.Id, State = state });
+        await _repository.UpsertAsync(item);
+    }
+
+    private static async Task IgnoreCompletionAsync(Task task)
+    {
+        try { await task; } catch (OperationCanceledException) { } catch (Exception) { }
+    }
+
+    private static void CleanupTempFiles(DownloadItem item)
+    {
+        var tempDir = Path.Combine(item.DestinationDirectory, $".mdm-{item.Id:N}");
+        try
+        {
+            if (Directory.Exists(tempDir))
+                Directory.Delete(tempDir, recursive: true);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    private sealed class Releaser : IDisposable
+    {
+        private readonly SemaphoreSlim _semaphore;
+        public Releaser(SemaphoreSlim semaphore) => _semaphore = semaphore;
+        public void Dispose() => _semaphore.Release();
     }
 }

@@ -1,0 +1,27 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="ModernDownloadManager.Linux.MainWindow"
+        Width="900" Height="620" MinWidth="700" MinHeight="420"
+        Title="Modern Download Manager">
+  <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="20">
+    <TextBlock Text="Modern Download Manager" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,12" />
+    <Grid Grid.Row="1" ColumnDefinitions="*,Auto">
+      <TextBox Name="UrlBox" Watermark="Paste an HTTP or HTTPS URL" />
+      <Button Grid.Column="1" Content="Add download" Click="AddDownload" Padding="18,8" Margin="8,0,0,12" />
+    </Grid>
+    <ListBox Name="Downloads" Grid.Row="2">
+      <ListBox.ItemTemplate>
+        <DataTemplate>
+          <Border BorderBrush="#444" BorderThickness="0,0,0,1" Padding="8">
+            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
+              <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" />
+              <TextBlock Grid.Column="1" Text="{Binding State}" />
+              <ProgressBar Grid.Row="1" Grid.ColumnSpan="2" Value="{Binding Progress}" Maximum="100" Margin="0,6,0,0" />
+            </Grid>
+          </Border>
+        </DataTemplate>
+      </ListBox.ItemTemplate>
+    </ListBox>
+    <TextBlock Name="Status" Grid.Row="3" Text="Ready" Opacity="0.75" />
+  </Grid>
+</Window>

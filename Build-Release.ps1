@@ -39,7 +39,9 @@ if (-not $SkipBuild) {
     & $msbuild $appProject /restore /t:Build /p:Configuration=Release /p:Platform=x64 /m "/p:RestoreConfigFile=$nugetConfig" "/p:RestorePackagesPath=$nugetPackages"
     if ($LASTEXITCODE -ne 0) { throw "The App Release build failed." }
 
-    & $msbuild $hostProject /restore /t:Build /p:Configuration=Release /p:Platform=x64 /m "/p:RestoreConfigFile=$nugetConfig" "/p:RestorePackagesPath=$nugetPackages"
+    & dotnet restore $hostProject --runtime win-x64 --configfile $nugetConfig --packages $nugetPackages
+    if ($LASTEXITCODE -ne 0) { throw "The NativeHost restore failed." }
+    & dotnet publish $hostProject -c Release -r win-x64 --self-contained true --no-restore "/p:RestorePackagesPath=$nugetPackages"
     if ($LASTEXITCODE -ne 0) { throw "The NativeHost Release build failed." }
 }
 
@@ -59,12 +61,14 @@ if (Test-Path -LiteralPath $stageRoot) {
 
 $appStage = Join-Path $stageRoot "app"
 $extensionStage = Join-Path $stageRoot "extension"
+$firefoxExtensionStage = Join-Path $stageRoot "extension-firefox"
 $nativeSetupStage = Join-Path $stageRoot "native-host-setup"
-New-Item -ItemType Directory -Force -Path $appStage, $extensionStage, $nativeSetupStage | Out-Null
+New-Item -ItemType Directory -Force -Path $appStage, $extensionStage, $firefoxExtensionStage, $nativeSetupStage | Out-Null
 
 Copy-Item (Join-Path $appExe.Directory.FullName "*") $appStage -Recurse -Force
 Copy-Item (Join-Path $hostExe.Directory.FullName "*") $appStage -Recurse -Force
 Copy-Item (Join-Path $repoRoot "extension\*") $extensionStage -Recurse -Force
+Copy-Item (Join-Path $repoRoot "extension-firefox\*") $firefoxExtensionStage -Recurse -Force
 Copy-Item (Join-Path $repoRoot "native-host-setup\*") $nativeSetupStage -Recurse -Force
 Copy-Item (Join-Path $repoRoot "README.md") $stageRoot -Force
 

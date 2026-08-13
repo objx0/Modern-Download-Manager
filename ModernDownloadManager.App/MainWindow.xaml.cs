@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using ModernDownloadManager.App.ViewModels;
 using ModernDownloadManager.Core.Models;
+using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Runtime.InteropServices;
 using WinRT; // required for Window.As<T>() used by the Mica backdrop
@@ -41,6 +42,8 @@ public sealed partial class MainWindow : Window
         foreach (var item in ViewModel.Downloads)
             item.ConfirmRemoveAsync = ConfirmRemoveAsync;
         ViewModel.Settings.TrayIconSettingChanged = enabled => (Application.Current as App)?.SetTrayIconEnabled(enabled);
+        ViewModel.Settings.StartupSettingChanged = enabled => (Application.Current as App)?.ConfigureStartup(enabled);
+        ViewModel.Settings.PreventSleepSettingChanged = enabled => (Application.Current as App)?.ApplyPreventSleepSetting(enabled);
 
         SetupTitleBar();
         TrySetMicaBackdrop();
@@ -97,80 +100,42 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var result = await ShowDownloadDialogAsync(ViewModel.NewUrlText);
-        if (result is null)
-            return;
-
-        await ViewModel.EnqueueDownloadAsync(ViewModel.NewUrlText, result.DestinationDirectory,
-            result.Category, result.StartNow, result.SuggestedFileName);
-        RememberFolder(result);
+        await ShowDownloadDialogAndEnqueueAsync(ViewModel.NewUrlText);
+        ViewModel.NewUrlText = string.Empty;
     }
 
-    public async Task<DownloadDialogResult?> ShowDownloadDialogAsync(string url, string? suggestedFileName = null)
+    public async Task<DownloadItem?> ShowDownloadDialogAndEnqueueAsync(string url, string? suggestedFileName = null,
+        string? referrer = null, string? cookie = null, string? userAgent = null)
     {
         if (!DispatcherQueue.HasThreadAccess)
         {
-            var completion = new TaskCompletionSource<DownloadDialogResult?>(
+            var completion = new TaskCompletionSource<DownloadItem?>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
             DispatcherQueue.TryEnqueue(async () =>
             {
-                try { completion.SetResult(await ShowDownloadDialogAsync(url, suggestedFileName)); }
+                try { completion.SetResult(await ShowDownloadDialogAndEnqueueAsync(url, suggestedFileName, referrer, cookie, userAgent)); }
                 catch (Exception ex) { completion.SetException(ex); }
             });
             return await completion.Task;
         }
 
         // Native messaging can arrive while the browser still owns focus.
-        // Activate and foreground the app before creating the ContentDialog so
-        // the first captured URL is visible instead of opening behind the tab.
-        BringToFront();
-
-        var inferredCategory = DownloadCategoryResolver.Resolve(suggestedFileName ?? url);
-        var category = new ComboBox
-        {
-            ItemsSource = Enum.GetValues<DownloadCategory>(),
-            SelectedItem = inferredCategory,
-            HorizontalAlignment = HorizontalAlignment.Stretch
-        };
-        var saveAs = new TextBox
-        {
-            Text = GetRememberedFolder(inferredCategory),
-            HorizontalAlignment = HorizontalAlignment.Stretch
-        };
-        var remember = new CheckBox { Content = "Remember path for this category", IsChecked = true };
-        category.SelectionChanged += (_, _) =>
-        {
-            if (category.SelectedItem is DownloadCategory selected)
-                saveAs.Text = GetRememberedFolder(selected);
-        };
-        var content = new StackPanel { Spacing = 6, MinWidth = 420 };
-        content.Children.Add(new TextBlock { Text = "URL", Opacity = 0.75 });
-        content.Children.Add(new TextBox { Text = url, IsReadOnly = true });
-        content.Children.Add(new TextBlock { Text = "Category", Opacity = 0.75, Margin = new Thickness(0, 8, 0, 0) });
-        content.Children.Add(category);
-        content.Children.Add(new TextBlock { Text = "Save As", Opacity = 0.75, Margin = new Thickness(0, 8, 0, 0) });
-        content.Children.Add(saveAs);
-        content.Children.Add(remember);
-
-        var dialog = new ContentDialog
-        {
-            Title = "Download File",
-            Content = content,
-            PrimaryButtonText = "Download Now",
-            SecondaryButtonText = "Download Later",
-            CloseButtonText = "Cancel",
-            XamlRoot = RootGrid.XamlRoot,
-            DefaultButton = ContentDialogButton.Primary
-        };
-        dialog.Opened += (_, _) => ForceForeground();
-        var result = await dialog.ShowAsync();
-        if (result == ContentDialogResult.None)
-            return null;
-
-        var selectedCategory = category.SelectedItem is DownloadCategory c ? c : inferredCategory;
-        var folder = string.IsNullOrWhiteSpace(saveAs.Text) ? GetRememberedFolder(selectedCategory) : saveAs.Text.Trim();
-        return new DownloadDialogResult(folder, selectedCategory,
-            result == ContentDialogResult.Primary, remember.IsChecked == true, suggestedFileName);
+        var wasVisible = AppWindow.IsVisible;
+        AppWindow.Hide();
+        var progressWindow = new DownloadDialogWindow(url, suggestedFileName, App.QueueManager!, GetRememberedFolder,
+            async result =>
+            {
+                RememberFolder(result);
+                return await App.QueueManager!.EnqueueAsync(url, result.DestinationDirectory,
+                    result.SuggestedFileName, ViewModel.Settings.CurrentEffectiveSettings.DefaultSpeedLimitBytesPerSecond,
+                    ViewModel.Settings.CurrentEffectiveSettings.DefaultSegmentCount, referrer, cookie, userAgent,
+                    result.Category, result.StartNow);
+            });
+        progressWindow.Activate();
+        var item = await progressWindow.Completion;
+        if (wasVisible)
+            BringToFront();
+        return item;
     }
 
     private void BringToFront()
@@ -267,13 +232,25 @@ public sealed partial class MainWindow : Window
 
     private void Nav_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
+        if ((args.SelectedItemContainer as NavigationViewItem)?.Tag as string == "About")
+        {
+            ViewModel.IsSettingsView = false;
+            ViewModel.IsAboutView = true;
+            ViewModel.HeaderText = "About";
+            return;
+        }
+
         if (args.IsSettingsSelected)
         {
+            ViewModel.IsAboutView = false;
             ViewModel.IsSettingsView = true;
+            ViewModel.HeaderText = "Settings";
             return;
         }
 
         ViewModel.IsSettingsView = false;
+        ViewModel.IsAboutView = false;
+        ViewModel.RefreshHeaderText();
 
         var tag = (args.SelectedItemContainer as NavigationViewItem)?.Tag as string;
         if (string.IsNullOrEmpty(tag))
@@ -288,6 +265,11 @@ public sealed partial class MainWindow : Window
         {
             ViewModel.CurrentFilter = Enum.Parse<FilterMode>(tag);
         }
+    }
+
+    private void OpenRepository_Click(object sender, RoutedEventArgs e)
+    {
+        Process.Start(new ProcessStartInfo(ViewModel.RepositoryUrl) { UseShellExecute = true });
     }
 
     private async void BrowseFolder_Click(object sender, RoutedEventArgs e)

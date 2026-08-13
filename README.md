@@ -10,7 +10,7 @@ A lightweight Windows download manager focused on faster, resumable, multi-conne
 - 🔁 Pause, resume, and continue downloads
 - 📁 Download history and persistence
 - 🚦 Queue and concurrent-download limits
-- 🌐 Chrome and Edge browser integration
+- 🌐 Chrome, Edge, and Firefox browser integration
 - 🖥️ Native Windows desktop app
 
 ## Download 📦
@@ -23,7 +23,7 @@ The installer includes:
 
 - Modern Download Manager
 - Browser native host
-- Chrome/Edge integration files
+- Chrome/Edge/Firefox integration files
 - Start Menu shortcuts
 - Uninstaller
 
@@ -31,10 +31,10 @@ The installer includes:
 
 After installing the app:
 
-1. Open chrome://extensions or edge://extensions.
+1. Open chrome://extensions or edge://extensions. For Firefox, open about:debugging#/runtime/this-firefox.
 2. Enable **Developer mode**.
 3. Select **Load unpacked**.
-4. Choose the installed extension folder.
+4. Choose the installed `extension` folder for Chromium browsers, or `extension-firefox` for Firefox.
 
 The extension enables:
 
@@ -65,11 +65,18 @@ The installer is created in:
 
     artifacts\installer\
 
+Run the core regression harness (range validation, atomic merge, and retry safety):
+
+    dotnet restore ModernDownloadManager.Core.Tests\ModernDownloadManager.Core.Tests.csproj --ignore-failed-sources --configfile .nuget\NuGet\NuGet.Config --packages .nuget\packages
+    dotnet run --project ModernDownloadManager.Core.Tests\ModernDownloadManager.Core.Tests.csproj --no-restore
+
 ## Current limitations ⚠️
 
 - Windows only
 - Unpackaged desktop application
 - Browser extension requires manual loading
+- Automatic browser capture falls back to the browser download if the desktop app is unavailable
+- Browser cookies are held in memory only and are not stored in download history
 - Extension icons are placeholders
 - No automatic update system yet
 

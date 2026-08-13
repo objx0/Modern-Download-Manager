@@ -33,6 +33,7 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 [Files]
 Source: "{#StageDir}\app\*"; DestDir: "{app}\app"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StageDir}\extension\*"; DestDir: "{app}\extension"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StageDir}\extension-firefox\*"; DestDir: "{app}\extension-firefox"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StageDir}\native-host-setup\*"; DestDir: "{app}\native-host-setup"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StageDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
@@ -50,4 +51,5 @@ Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\extension"
+Type: filesandordirs; Name: "{app}\extension-firefox"
 Type: filesandordirs; Name: "{app}\native-host-setup"
