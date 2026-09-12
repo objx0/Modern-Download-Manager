@@ -34,9 +34,9 @@ New-Item -ItemType Directory -Force -Path $manifestDir | Out-Null
 $manifestPath = Join-Path $manifestDir "$hostName.json"
 
 $templatePath = Join-Path $PSScriptRoot "$hostName.json.template"
-$escapedExePath = $NativeHostExePath -replace "\\", "\\"
-$manifestJson = (Get-Content $templatePath -Raw) -replace "REPLACED_BY_INSTALL_SCRIPT", $escapedExePath
-Set-Content -Path $manifestPath -Value $manifestJson -Encoding UTF8
+$captureManifest = Get-Content $templatePath -Raw | ConvertFrom-Json
+$captureManifest.path = $NativeHostExePath
+$captureManifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
 
 Write-Host "Wrote manifest: $manifestPath"
 
@@ -53,4 +53,4 @@ Register-Browser "HKCU:\Software\Mozilla\NativeMessagingHosts" "Firefox"
 
 Write-Host ""
 Write-Host "Native messaging registration complete."
-Write-Host "Load the Chromium extension from chrome://extensions or edge://extensions, or load extension-firefox in Firefox."
+Write-Host "Load the Chromium extension from chrome://extensions or edge://extensions, or load extensions\firefox in Firefox."

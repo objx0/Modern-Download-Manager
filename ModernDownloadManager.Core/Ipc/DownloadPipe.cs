@@ -9,13 +9,66 @@ namespace ModernDownloadManager.Core.Ipc;
 /// Minimal local IPC so the browser extension's native-messaging host can hand
 /// a download off to an already-running app instance instead of always
 /// launching a new process. One JSON message per connection, then a one-word
-/// ack — deliberately simple since this only ever runs on localhost between
+/// ack â€” deliberately simple since this only ever runs on localhost between
 /// two processes we control.
 /// </summary>
 public static class DownloadPipe
 {
     public const string PipeName = "ModernDownloadManager.Queue";
+    public const string ConfirmedPipeName = "ModernDownloadManager.Capture.v2";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    // Confirmed capture protocol: one JSON line, then an explicit acceptance.
+    // Keep the existing transport for platform adapters that have not migrated.
+    public static async Task RunConfirmedServerAsync(Func<DownloadRequestMessage, Task<bool>> onRequest, CancellationToken ct, string pipeName = ConfirmedPipeName)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            var server = new NamedPipeServerStream(pipeName, PipeDirection.InOut,
+                NamedPipeServerStream.MaxAllowedServerInstances, PipeTransmissionMode.Byte,
+                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+            try { await server.WaitForConnectionAsync(ct); }
+            catch { server.Dispose(); if (ct.IsCancellationRequested) return; throw; }
+            _ = HandleConfirmedAsync(server, onRequest, ct);
+        }
+    }
+
+    private static async Task HandleConfirmedAsync(NamedPipeServerStream server,
+        Func<DownloadRequestMessage, Task<bool>> onRequest, CancellationToken ct)
+    {
+        using (server)
+        {
+            try
+            {
+                using var reader = new StreamReader(server, Encoding.UTF8, leaveOpen: true);
+                using var writer = new StreamWriter(server, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
+                var json = await reader.ReadLineAsync(ct);
+                var request = json is null ? null : JsonSerializer.Deserialize<DownloadRequestMessage>(json, JsonOptions);
+                var accepted = request is not null && Uri.TryCreate(request.Url, UriKind.Absolute, out var uri)
+                    && (uri.Scheme == "http" || uri.Scheme == "https") && await onRequest(request);
+                await writer.WriteLineAsync(accepted ? "accepted" : "declined");
+            }
+            catch (Exception) { /* A disconnected browser must not stop the capture listener. */ }
+        }
+    }
+
+    // null means no listener: only that case is safe to retry/launch the app.
+    public static async Task<string?> TryConfirmedCaptureAsync(DownloadRequestMessage request, TimeSpan connectTimeout, string pipeName = ConfirmedPipeName)
+    {
+        using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut,
+            PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+        try { await client.ConnectAsync((int)connectTimeout.TotalMilliseconds); }
+        catch (Exception ex) when (ex is TimeoutException or IOException) { return null; }
+        try
+        {
+            using var writer = new StreamWriter(client, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
+            using var reader = new StreamReader(client, Encoding.UTF8, leaveOpen: true);
+            await writer.WriteLineAsync(JsonSerializer.Serialize(request, JsonOptions));
+            using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+            return await reader.ReadLineAsync(deadline.Token) == "accepted" ? "queued" : "declined";
+        }
+        catch (Exception ex) when (ex is IOException or OperationCanceledException) { return "error"; }
+    }
 
     /// <summary>Server side: call once at startup, keeps accepting connections until cancelled.</summary>
     public static async Task RunServerAsync(Func<DownloadRequestMessage, Task> onRequest, CancellationToken ct)
@@ -72,7 +125,7 @@ public static class DownloadPipe
         }
         catch (Exception ex) when (ex is TimeoutException or OperationCanceledException or IOException)
         {
-            return false; // no app instance listening — caller should launch one
+            return false; // no app instance listening â€” caller should launch one
         }
     }
 

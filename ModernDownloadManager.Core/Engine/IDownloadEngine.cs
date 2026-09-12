@@ -29,6 +29,7 @@ public interface IDownloadEngine
     event EventHandler<DownloadStateChangedEventArgs>? StateChanged;
 
     Task StartAsync(DownloadItem item, CancellationToken cancellationToken = default);
+    Task StartAsync(DownloadJob job, CancellationToken cancellationToken = default);
     Task PauseAsync(Guid downloadId);
     Task CancelAsync(Guid downloadId);
 }

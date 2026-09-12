@@ -7,7 +7,7 @@ namespace ModernDownloadManager.Core.Persistence;
 /// Persists the download queue/history so the app can restore state after a
 /// restart or crash (in-progress items resume from their temp-file byte offset).
 /// </summary>
-public sealed class DownloadRepository : IAsyncDisposable
+public sealed class DownloadRepository : IDownloadRepository
 {
     private readonly SQLiteAsyncConnection _db;
 

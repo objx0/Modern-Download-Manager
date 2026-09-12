@@ -10,6 +10,7 @@ internal static class Program
 {
     private static async Task Main()
     {
+        ILocalIpc localIpc = new NamedPipeIpc();
         var request = await ReadMessageAsync<DownloadRequestMessage>();
         if (request is null || string.IsNullOrWhiteSpace(request.Url))
         {
@@ -17,7 +18,7 @@ internal static class Program
             return;
         }
 
-        var delivered = await DownloadPipe.TrySendWithRetryAsync(request);
+        var delivered = await localIpc.TrySendWithRetryAsync(request);
         if (!delivered)
         {
             var app = Path.Combine(AppContext.BaseDirectory, "ModernDownloadManager");
@@ -25,7 +26,7 @@ internal static class Program
                 throw new FileNotFoundException("Linux desktop application was not found.", app);
             Process.Start(new ProcessStartInfo(app) { UseShellExecute = false });
             await Task.Delay(400);
-            delivered = await DownloadPipe.TrySendWithRetryAsync(request);
+            delivered = await localIpc.TrySendWithRetryAsync(request);
         }
         await WriteMessageAsync(new { status = delivered ? "queued" : "launched" });
     }

@@ -6,9 +6,11 @@
 *.db3
 *.db3-shm
 *.db3-wal
-extension-dev-keys/*
-!extension-dev-keys/extension_id.txt
-!extension-dev-keys/extension_public.der
-!extension-dev-keys/extension_public_base64.txt
+extensions/dev-keys/*
 artifacts/
 .nuget/packages/
+
+# macOS development and publishing output
+.DS_Store
+**/publish/
+macos/.generated/

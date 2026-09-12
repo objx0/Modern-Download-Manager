@@ -5,23 +5,23 @@
     xmlns:vm="using:ModernDownloadManager.App.ViewModels">
     <Grid x:Name="WindowRoot" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
         <Grid.RowDefinitions><RowDefinition Height="46"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-        <Grid x:Name="MiniTitleBar" Grid.Row="0" Padding="12,0" Background="Transparent">
+        <Grid x:Name="MiniTitleBar" Grid.Row="0" Padding="{StaticResource MiniPagePadding}" Background="Transparent">
             <Grid.ColumnDefinitions><ColumnDefinition Width="30"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <Border Width="30" Height="30" CornerRadius="8" Background="{ThemeResource AccentFillColorDefaultBrush}"><FontIcon Glyph="&#xE896;" Foreground="White" FontSize="15" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
             <TextBlock Grid.Column="1" Text="Modern Download Manager" Margin="10,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold" FontSize="12"/>
         </Grid>
-        <Border Grid.Row="1" Margin="12,0,12,12" Padding="16" CornerRadius="12" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+        <Border Grid.Row="1" Margin="0,0,0,0" Padding="{StaticResource CardPadding}" CornerRadius="12" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
             <Grid x:Name="Root">
                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                 <Grid>
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                    <TextBlock Text="{x:Bind ViewModel.FileName, Mode=OneWay}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-                    <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.StateText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                    <TextBlock Text="{Binding FileName, Mode=OneWay}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Grid.Column="1" Text="{Binding StateText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}" VerticalAlignment="Center" Margin="12,0,0,0"/>
                 </Grid>
-                <ProgressBar Grid.Row="1" Value="{x:Bind ViewModel.ProgressPercent, Mode=OneWay}" Maximum="100" Margin="0,14,0,10" Height="6"/>
-                <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="14"><TextBlock Text="{x:Bind ViewModel.SizeText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}"/><TextBlock Text="{x:Bind ViewModel.SpeedText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}"/><TextBlock Text="{x:Bind ViewModel.EtaText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}"/><TextBlock Text="{x:Bind ViewModel.StateText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}"/></StackPanel>
-                <TextBlock Grid.Row="3" Text="{x:Bind ViewModel.DownloadedDateText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}" Margin="0,14,0,0"/>
-                <StackPanel Grid.Row="4" HorizontalAlignment="Center" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0"><Button Content="Pause" Command="{x:Bind ViewModel.PauseCommand}" IsEnabled="{x:Bind ViewModel.CanPause, Mode=OneWay}" Style="{StaticResource QuietActionButtonStyle}"/><Button Content="Resume" Command="{x:Bind ViewModel.ResumeCommand}" IsEnabled="{x:Bind ViewModel.CanResume, Mode=OneWay}" Style="{StaticResource QuietActionButtonStyle}"/><Button Content="Cancel" Command="{x:Bind ViewModel.CancelCommand}" IsEnabled="{x:Bind ViewModel.CanCancel, Mode=OneWay}" Style="{StaticResource QuietActionButtonStyle}"/><Button Content="Open folder" Command="{x:Bind ViewModel.OpenFolderCommand}" IsEnabled="{x:Bind ViewModel.CanOpenFolder, Mode=OneWay}" Style="{StaticResource QuietActionButtonStyle}"/><Button Content="Open file" Command="{x:Bind ViewModel.OpenFileCommand}" IsEnabled="{x:Bind ViewModel.CanOpenFile, Mode=OneWay}" Style="{StaticResource QuietActionButtonStyle}"/></StackPanel>
+                <ProgressBar Grid.Row="1" Value="{Binding ProgressPercent, Mode=OneWay}" Maximum="100" Margin="0,14,0,10" Height="6"/>
+                <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="14"><TextBlock Text="{Binding SizeText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}"/><TextBlock Text="{Binding SpeedText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}"/><TextBlock Text="{Binding EtaText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}"/><TextBlock Text="{Binding StateText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}"/></StackPanel>
+                <TextBlock Grid.Row="3" Text="{Binding DownloadedDateText, Mode=OneWay}" Style="{StaticResource MetaTextStyle}" Margin="0,14,0,0"/>
+                <StackPanel Grid.Row="4" HorizontalAlignment="Center" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0"><Button Content="Pause" Command="{Binding PauseCommand}" IsEnabled="{Binding CanPause, Mode=OneWay}" Style="{StaticResource QuietActionButtonStyle}"/><Button Content="Resume" Command="{Binding ResumeCommand}" IsEnabled="{Binding CanResume, Mode=OneWay}" Style="{StaticResource QuietActionButtonStyle}"/><Button Content="Cancel" Command="{Binding CancelCommand}" IsEnabled="{Binding CanCancel, Mode=OneWay}" Style="{StaticResource QuietActionButtonStyle}"/><Button Content="Open folder" Command="{Binding OpenFolderCommand}" IsEnabled="{Binding CanOpenFolder, Mode=OneWay}" Style="{StaticResource QuietActionButtonStyle}"/><Button Content="Open file" Command="{Binding OpenFileCommand}" IsEnabled="{Binding CanOpenFile, Mode=OneWay}" Style="{StaticResource QuietActionButtonStyle}"/></StackPanel>
             </Grid>
         </Border>
     </Grid>

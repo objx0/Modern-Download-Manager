@@ -90,25 +90,26 @@ then:
    next to the host — see install script) with `--add-download=<base64 JSON>`,
    which `App.xaml.cs` picks up on cold start.
 
-### `extension/` (Manifest V3, Chrome + Edge — one codebase)
-- **Automatic capture** (default on): `chrome.downloads.onCreated` cancels the
-  browser's own download the instant it starts and hands the URL + browser's
-  own resolved filename + referrer + cookies to the native host instead. This
-  is what gives the IDM/FDM-style "every download goes through the manager"
-  behavior — and since the browser already resolved the filename properly,
-  it sidesteps all the guessing the engine has to do for a pasted-in URL.
+### `extensions/chromium/` (Manifest V3, Chrome + Edge — one codebase)
+- **Automatic capture** (default on): the Chromium extension parks the browser's
+  own download as soon as it starts, waits for `onDeterminingFilename` to expose
+  the browser-resolved filename, then hands the URL + filename + referrer +
+  cookies to the native host. If the app declines or is unavailable, the
+  extension resumes the browser download so a capture failure never loses it.
+  This gives the IDM/FDM-style "every download goes through the manager"
+  behavior while preserving the browser's authoritative filename.
 - **Manual capture**: right-click a link/video/audio/image → "Download with
   Modern Download Manager" — useful for media that isn't a browser-native
   "download" (e.g. a `<video>` element's source).
 - **Toggle**: the toolbar popup has an on/off switch for automatic capture, in
   case you sometimes want the browser's own download bar instead.
 - **Fixed extension ID**: `manifest.json` embeds a `key` (from a keypair I
-  generated for this project — the private half is in `extension-dev-keys/`,
+  generated for this project — the private half is in `extensions/dev-keys/`,
   gitignore it) so the extension ID stays the same
   (`gpflfhfbgjbijbocjdjngdfkohaojmaf`) across reloads. This matters because the
   native host's `allowed_origins` has to name the exact extension ID, and that
   ID would otherwise change every time you reload an unpacked extension.
-- Icons in `extension/icons/` are placeholder art — swap them for real branding
+- Icons in `extensions/chromium/icons/` are placeholder art — swap them for real branding
   whenever you're ready; they're not load-bearing for functionality.
 
 ### One-time setup on your Windows machine
@@ -125,7 +126,7 @@ then:
    `HKCU` (no admin needed). Re-run it if the NativeHost.exe path ever changes.
 4. In Chrome or Edge: go to `chrome://extensions` (or `edge://extensions`),
    enable **Developer mode**, click **Load unpacked**, and select the
-   `extension/` folder.
+   `extensions/chromium/` folder.
 5. Confirm the loaded extension's ID matches `gpflfhfbgjbijbocjdjngdfkohaojmaf`
    (shown on the extensions page) — it should, since the key is fixed in
    `manifest.json`.

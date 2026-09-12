@@ -15,14 +15,6 @@ namespace ModernDownloadManager.App;
 [SupportedOSPlatform("windows10.0.17763.0")]
 public sealed partial class MainWindow : Window
 {
-    private const int SwRestore = 9;
-
-    [DllImport("user32.dll")]
-    private static extern bool SetForegroundWindow(nint hWnd);
-
-    [DllImport("user32.dll")]
-    private static extern bool ShowWindow(nint hWnd, int nCmdShow);
-
     public sealed record DownloadDialogResult(string DestinationDirectory, DownloadCategory Category,
         bool StartNow, bool RememberCategory, string? SuggestedFileName);
 
@@ -37,16 +29,29 @@ public sealed partial class MainWindow : Window
     {
         ViewModel = viewModel;
         InitializeComponent();
+        Title = "Modern Download Manager";
+        AppWindow.Title = "Modern Download Manager";
+        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "App.ico"));
         RootGrid.DataContext = ViewModel;
         ViewModel.ConfirmRemoveAsync = ConfirmRemoveAsync;
+        ViewModel.OpenDownloadWindowAsync = OpenDownloadWindowAsync;
         foreach (var item in ViewModel.Downloads)
+        {
             item.ConfirmRemoveAsync = ConfirmRemoveAsync;
+            item.OpenDownloadWindowAsync = OpenDownloadWindowAsync;
+        }
         ViewModel.Settings.TrayIconSettingChanged = enabled => (Application.Current as App)?.SetTrayIconEnabled(enabled);
         ViewModel.Settings.StartupSettingChanged = enabled => (Application.Current as App)?.ConfigureStartup(enabled);
         ViewModel.Settings.PreventSleepSettingChanged = enabled => (Application.Current as App)?.ApplyPreventSleepSetting(enabled);
 
+        Closed += (_, _) =>
+        {
+            _optionsWindow?.Close();
+            _aboutWindow?.Close();
+        };
         SetupTitleBar();
         TrySetMicaBackdrop();
+        CategoriesTree.SelectedNode = CategoriesTree.RootNodes[0];
     }
 
     internal void InstallCloseToTrayHandler()
@@ -90,22 +95,47 @@ public sealed partial class MainWindow : Window
     }
 
     private void AppTitleBar_PaneToggleRequested(object sender, RoutedEventArgs args) =>
-        Nav.IsPaneOpen = !Nav.IsPaneOpen;
+        CategoriesPane.Visibility = CategoriesPane.Visibility == Visibility.Visible
+            ? Visibility.Collapsed : Visibility.Visible;
 
     private async void AddDownload_Click(object sender, RoutedEventArgs e)
     {
-        if (string.IsNullOrWhiteSpace(ViewModel.NewUrlText))
+        var url = ViewModel.NewUrlText?.Trim();
+        if (string.IsNullOrWhiteSpace(url))
         {
-            ViewModel.StatusText = "Paste a URL first.";
+            var urlInput = new TextBox
+            {
+                PlaceholderText = "https://example.com/file.zip",
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                MinWidth = 420
+            };
+            var urlDialog = new ContentDialog
+            {
+                Title = "New download",
+                Content = urlInput,
+                PrimaryButtonText = "Continue",
+                CloseButtonText = "Cancel",
+                DefaultButton = ContentDialogButton.Primary,
+                XamlRoot = RootGrid.XamlRoot
+            };
+            if (await urlDialog.ShowAsync() != ContentDialogResult.Primary)
+                return;
+            url = urlInput.Text.Trim();
+        }
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed) ||
+            (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps))
+        {
+            ViewModel.StatusText = "Enter a valid HTTP or HTTPS URL.";
             return;
         }
 
-        await ShowDownloadDialogAndEnqueueAsync(ViewModel.NewUrlText);
+        await ShowDownloadDialogAndEnqueueAsync(url);
         ViewModel.NewUrlText = string.Empty;
     }
 
     public async Task<DownloadItem?> ShowDownloadDialogAndEnqueueAsync(string url, string? suggestedFileName = null,
-        string? referrer = null, string? cookie = null, string? userAgent = null)
+        string? referrer = null, string? cookie = null, string? userAgent = null, long totalBytes = -1, bool waitForAcceptance = false)
     {
         if (!DispatcherQueue.HasThreadAccess)
         {
@@ -113,14 +143,13 @@ public sealed partial class MainWindow : Window
                 TaskCreationOptions.RunContinuationsAsynchronously);
             DispatcherQueue.TryEnqueue(async () =>
             {
-                try { completion.SetResult(await ShowDownloadDialogAndEnqueueAsync(url, suggestedFileName, referrer, cookie, userAgent)); }
+                try { completion.SetResult(await ShowDownloadDialogAndEnqueueAsync(url, suggestedFileName, referrer, cookie, userAgent, totalBytes, waitForAcceptance)); }
                 catch (Exception ex) { completion.SetException(ex); }
             });
             return await completion.Task;
         }
 
         // Native messaging can arrive while the browser still owns focus.
-        var wasVisible = AppWindow.IsVisible;
         AppWindow.Hide();
         var progressWindow = new DownloadDialogWindow(url, suggestedFileName, App.QueueManager!, GetRememberedFolder,
             async result =>
@@ -130,44 +159,25 @@ public sealed partial class MainWindow : Window
                     result.SuggestedFileName, ViewModel.Settings.CurrentEffectiveSettings.DefaultSpeedLimitBytesPerSecond,
                     ViewModel.Settings.CurrentEffectiveSettings.DefaultSegmentCount, referrer, cookie, userAgent,
                     result.Category, result.StartNow);
-            });
-        progressWindow.Activate();
-        var item = await progressWindow.Completion;
-        if (wasVisible)
-            BringToFront();
+            }, totalBytes);
+        progressWindow.Closed += (_, _) => AppWindow.Show();
+        progressWindow.ShowAndFocus();
+        var item = await (waitForAcceptance ? progressWindow.Acceptance : progressWindow.Completion);
+        if (!waitForAcceptance) AppWindow.Show();
         return item;
     }
 
-    private void BringToFront()
+    private async Task OpenDownloadWindowAsync(DownloadItemViewModel viewModel)
     {
-        AppWindow.Show();
-        Activate();
-        var hwnd = WindowNative.GetWindowHandle(this);
-        ShowWindow(hwnd, SwRestore);
-        ForceForeground(hwnd);
-    }
+        var item = viewModel.Model;
+        if (!viewModel.CanShowDownloadWindow || App.QueueManager is null)
+            return;
 
-    private void ForceForeground(nint? targetHandle = null)
-    {
-        var target = targetHandle ?? WindowNative.GetWindowHandle(this);
-        var foreground = GetForegroundWindow();
-        var foregroundThread = GetWindowThreadProcessId(foreground, out _);
-        var currentThread = GetCurrentThreadId();
-        var attached = foregroundThread != 0 && foregroundThread != currentThread &&
-                       AttachThreadInput(foregroundThread, currentThread, true);
-        try
-        {
-            AllowSetForegroundWindow(-1);
-            ShowWindow(target, SwRestore);
-            BringWindowToTop(target);
-            SetActiveWindow(target);
-            SetForegroundWindow(target);
-        }
-        finally
-        {
-            if (attached)
-                AttachThreadInput(foregroundThread, currentThread, false);
-        }
+        AppWindow.Hide();
+        var progressWindow = new DownloadDialogWindow(item, App.QueueManager);
+        progressWindow.ShowAndFocus();
+        await progressWindow.Completion;
+        AppWindow.Show();
     }
 
     private delegate nint WindowProcDelegate(nint hwnd, uint message, nint wParam, nint lParam);
@@ -177,27 +187,6 @@ public sealed partial class MainWindow : Window
 
     [DllImport("user32.dll", EntryPoint = "CallWindowProcW")]
     private static extern nint CallWindowProc(nint previousProc, nint hwnd, uint message, nint wParam, nint lParam);
-
-    [DllImport("user32.dll")]
-    private static extern nint GetForegroundWindow();
-
-    [DllImport("user32.dll")]
-    private static extern uint GetWindowThreadProcessId(nint hWnd, out uint processId);
-
-    [DllImport("kernel32.dll")]
-    private static extern uint GetCurrentThreadId();
-
-    [DllImport("user32.dll")]
-    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach);
-
-    [DllImport("user32.dll")]
-    private static extern bool BringWindowToTop(nint hWnd);
-
-    [DllImport("user32.dll")]
-    private static extern nint SetActiveWindow(nint hWnd);
-
-    [DllImport("user32.dll")]
-    private static extern bool AllowSetForegroundWindow(int processId);
 
     private string GetRememberedFolder(DownloadCategory category) =>
         ViewModel.Settings.CurrentEffectiveSettings.CategoryDownloadFolders.TryGetValue(category.ToString(), out var folder)
@@ -230,64 +219,93 @@ public sealed partial class MainWindow : Window
         _micaController.SetSystemBackdropConfiguration(_backdropConfig);
     }
 
-    private void Nav_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
+    private void Categories_ItemInvoked(TreeView sender, TreeViewItemInvokedEventArgs args)
     {
-        if ((args.SelectedItemContainer as NavigationViewItem)?.Tag as string == "About")
-        {
-            ViewModel.IsSettingsView = false;
-            ViewModel.IsAboutView = true;
-            ViewModel.HeaderText = "About";
+        if (args.InvokedItem is not TreeViewNode node || node.Content is not string name)
             return;
-        }
-
-        if (args.IsSettingsSelected)
-        {
-            ViewModel.IsAboutView = false;
-            ViewModel.IsSettingsView = true;
-            ViewModel.HeaderText = "Settings";
-            return;
-        }
-
         ViewModel.IsSettingsView = false;
         ViewModel.IsAboutView = false;
-        ViewModel.RefreshHeaderText();
-
-        var tag = (args.SelectedItemContainer as NavigationViewItem)?.Tag as string;
-        if (string.IsNullOrEmpty(tag))
-            return;
-
-        if (tag.StartsWith("Category:"))
+        if (Enum.TryParse<DownloadCategory>(name, out var category))
         {
+            ViewModel.CurrentCategory = category;
             ViewModel.CurrentFilter = FilterMode.Category;
-            ViewModel.CurrentCategory = Enum.Parse<DownloadCategory>(tag["Category:".Length..]);
         }
         else
         {
-            ViewModel.CurrentFilter = Enum.Parse<FilterMode>(tag);
+            ViewModel.CurrentFilter = name switch
+            {
+                "Unfinished" => FilterMode.Active,
+                "Finished" => FilterMode.Completed,
+                "Queued" => FilterMode.Queued,
+                _ => FilterMode.All
+            };
         }
+        ViewModel.RefreshHeaderText();
     }
 
-    private void OpenRepository_Click(object sender, RoutedEventArgs e)
+    private void AllDownloads_Click(object sender, RoutedEventArgs e)
     {
-        Process.Start(new ProcessStartInfo(ViewModel.RepositoryUrl) { UseShellExecute = true });
+        ViewModel.IsSettingsView = false;
+        ViewModel.IsAboutView = false;
+        ViewModel.CurrentFilter = FilterMode.All;
+        ViewModel.RefreshHeaderText();
+        CategoriesTree.SelectedNode = CategoriesTree.RootNodes[0];
     }
 
-    private async void BrowseFolder_Click(object sender, RoutedEventArgs e)
+    private InformationWindow? _optionsWindow;
+    private InformationWindow? _aboutWindow;
+
+    private void Options_Click(object sender, RoutedEventArgs e)
     {
-        var picker = new Windows.Storage.Pickers.FolderPicker
+        if (_optionsWindow is null)
         {
-            SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.Downloads
+            _optionsWindow = new InformationWindow(ViewModel, this, options: true);
+            _optionsWindow.Closed += (_, _) => _optionsWindow = null;
+        }
+        _optionsWindow.AppWindow.Show();
+        _optionsWindow.Activate();
+    }
+
+    private void About_Click(object sender, RoutedEventArgs e)
+    {
+        if (_aboutWindow is null)
+        {
+            _aboutWindow = new InformationWindow(ViewModel, this, options: false);
+            _aboutWindow.Closed += (_, _) => _aboutWindow = null;
+        }
+        _aboutWindow.AppWindow.Show();
+        _aboutWindow.Activate();
+    }
+
+    private void Exit_Click(object sender, RoutedEventArgs e) => RequestExitFromTray();
+
+    private async void DownloadsTable_DoubleTapped(object sender, Microsoft.UI.Xaml.Input.DoubleTappedRoutedEventArgs e)
+    {
+        if (ViewModel.SelectedDownload is not { } item) return;
+        if (item.CanOpenFile) item.OpenFileCommand.Execute(null);
+        else if (item.CanShowDownloadWindow) await OpenDownloadWindowAsync(item);
+    }
+
+    private async void ClearCompleted_Click(object sender, RoutedEventArgs e)
+    {
+        var completed = ViewModel.Downloads.Where(d => d.State == DownloadState.Completed).ToArray();
+        if (completed.Length == 0)
+        {
+            ViewModel.StatusText = "No completed downloads to clear.";
+            return;
+        }
+        var dialog = new ContentDialog
+        {
+            Title = "Clear completed downloads?",
+            Content = $"Remove {completed.Length} completed download(s) from the list? Your files will be kept.",
+            PrimaryButtonText = "Clear list",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Close,
+            XamlRoot = RootGrid.XamlRoot
         };
-        picker.FileTypeFilter.Add("*");
-
-        // Unpackaged WinUI 3 apps need the window handle wired to the picker
-        // explicitly — without this it throws instead of opening.
-        var hwnd = WindowNative.GetWindowHandle(this);
-        InitializeWithWindow.Initialize(picker, hwnd);
-
-        var folder = await picker.PickSingleFolderAsync();
-        if (folder is not null)
-            ViewModel.Settings.DefaultDownloadFolder = folder.Path;
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        foreach (var item in completed)
+            await item.RemoveFromListAsync();
     }
 
     private async Task<RemoveDecision> ConfirmRemoveAsync(DownloadItemViewModel item)

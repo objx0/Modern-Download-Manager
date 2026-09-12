@@ -67,8 +67,8 @@ New-Item -ItemType Directory -Force -Path $appStage, $extensionStage, $firefoxEx
 
 Copy-Item (Join-Path $appExe.Directory.FullName "*") $appStage -Recurse -Force
 Copy-Item (Join-Path $hostExe.Directory.FullName "*") $appStage -Recurse -Force
-Copy-Item (Join-Path $repoRoot "extension\*") $extensionStage -Recurse -Force
-Copy-Item (Join-Path $repoRoot "extension-firefox\*") $firefoxExtensionStage -Recurse -Force
+Copy-Item (Join-Path $repoRoot "extensions\chromium\*") $extensionStage -Recurse -Force
+Copy-Item (Join-Path $repoRoot "extensions\firefox\*") $firefoxExtensionStage -Recurse -Force
 Copy-Item (Join-Path $repoRoot "native-host-setup\*") $nativeSetupStage -Recurse -Force
 Copy-Item (Join-Path $repoRoot "README.md") $stageRoot -Force
 

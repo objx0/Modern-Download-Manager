@@ -1,85 +1,211 @@
-# Modern Download Manager 🚀
+# Modern Download Manager
 
-A lightweight Windows download manager focused on faster, resumable, multi-connection downloads.
+A cross-platform, open-source download manager with resumable multi-connection transfers, queue control, persistent history, and browser capture.
 
-> ⚠️ **Pre-alpha:** This project is still experimental. Expect bugs and breaking changes.
+> **Pre-alpha:** MDM is experimental software. Expect bugs, incomplete platform support, and breaking changes.
 
-## Features ✨
+## Features
 
-- ⚡ Multi-connection downloads
-- 🔁 Pause, resume, and continue downloads
-- 📁 Download history and persistence
-- 🚦 Queue and concurrent-download limits
-- 🌐 Chrome, Edge, and Firefox browser integration
-- 🖥️ Native Windows desktop app
+- Multi-connection downloads with automatic single-stream fallback
+- Pause, resume, retry, cancellation, and persistent download history
+- Queue and concurrent-download limits
+- Per-category download folders and optional speed limits
+- Browser capture from Chrome, Edge, and Firefox
+- Native-messaging handoff with browser fallback if MDM is unavailable
+- Capture prompt with filename, category, destination, and background-download options
+- Progress reporting with downloaded size, speed, ETA, resume capability, and connection count
+- Windows WinUI 3 desktop application
+- Linux and macOS Avalonia ports sharing the same core engine
 
-## Download 📦
+## Repository layout
 
-Download the latest installer from the GitHub **Releases** page:
+| Path | Purpose |
+| --- | --- |
+| `ModernDownloadManager.Core/` | Shared downloader, queue, models, persistence, and local IPC |
+| `ModernDownloadManager.App/` | Windows WinUI 3 application |
+| `ModernDownloadManager.NativeHost/` | Windows browser native-messaging host |
+| `extensions/chromium/` | Manifest V3 extension for Chrome and Edge |
+| `extensions/firefox/` | Manifest V3 extension for Firefox |
+| `extensions/tests/` | Node-based browser handoff tests |
+| `linux/` | Linux Avalonia app, host, and registration scripts |
+| `macos/` | macOS Avalonia app, host, and registration scripts |
+| `native-host-setup/` | Windows native-host registration scripts |
 
-    ModernDownloadManager-setup-0.1.0-prealpha.exe
+## Releases
 
-The installer includes:
+Release artifacts are published on the GitHub **Releases** page. A Windows release contains the desktop app, native host, browser extensions, native-host setup files, shortcuts, and uninstaller.
 
-- Modern Download Manager
-- Browser native host
-- Chrome/Edge/Firefox integration files
-- Start Menu shortcuts
-- Uninstaller
+Linux and macOS are development builds; signed installers and packaged application bundles are not configured yet.
 
-## Browser Extension 🌐
+## Browser extensions
 
-After installing the app:
+### Chrome and Edge
 
-1. Open chrome://extensions or edge://extensions. For Firefox, open about:debugging#/runtime/this-firefox.
-2. Enable **Developer mode**.
-3. Select **Load unpacked**.
-4. Choose the installed `extension` folder for Chromium browsers, or `extension-firefox` for Firefox.
+The Chromium extension is in `extensions/chromium/`. It uses Manifest V3 and supports automatic capture, right-click capture for links/media, browser-resolved filenames, active user-agent/referrer/cookie forwarding, a monitoring toggle, and a minimum capture-size setting.
 
-The extension enables:
+Load it for development:
 
-- Automatic download capture
-- Right-click **Download with Modern Download Manager**
-- Passing filenames, cookies, and referrers to the desktop app
+1. Build and register the native host as described below.
+2. Open `chrome://extensions` or `edge://extensions`.
+3. Enable **Developer mode**.
+4. Choose **Load unpacked** and select `extensions/chromium/`.
+5. Use the extension popup to turn monitoring on or off.
 
-The extension is currently distributed separately as a ZIP until it is published in the browser extension stores.
+The manifest contains a fixed public extension key so the unpacked extension keeps the same ID. The private development key is not included in this repository.
 
-## Build from source 🛠️
+### Firefox
 
-Requirements:
+The Firefox extension is in `extensions/firefox/` and supports the same capture, context-menu, popup, cookie, referrer, and user-agent features.
 
-- Windows 10 or newer
+Load it temporarily:
+
+1. Open `about:debugging#/runtime/this-firefox`.
+2. Select **This Firefox**.
+3. Choose **Load Temporary Add-on**.
+4. Select `extensions/firefox/manifest.json`.
+
+Temporary Firefox extensions are removed when Firefox closes. A signed package is required for permanent installation.
+
+## Browser capture behavior
+
+When monitoring is enabled, the extension pauses the browser download, waits for the browser-resolved filename, and sends the request to the native host. MDM then shows the capture prompt.
+
+- **Start Download** accepts and starts the MDM transfer.
+- **Download Later** queues it without starting immediately.
+- **Download in background** closes the prompt after acceptance; the transfer continues in MDM and remains in the main list/tray.
+- If capture is declined, unavailable, or disabled, the extension resumes the browser download.
+- After MDM accepts an item, the extension cancels and removes the browser copy to avoid duplicates.
+
+Cookies are held in memory for the active handoff and are not written to download history. Some sites use short-lived signed URLs, special headers, or media endpoints that cannot be downloaded outside the browser; those links may still fall back to the browser.
+
+## Windows
+
+### Requirements
+
+- Windows 10 version 1809 or newer
+- .NET 8 SDK
 - Visual Studio with the WinUI/Desktop development workload
-- .NET SDK
-- Inno Setup 6 for building the installer
+- Inno Setup 6 only when building the installer
 
-Build and stage a release:
+### Build
 
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Build-Release.ps1 -Version 0.1.0
+From the repository root in PowerShell:
 
-Build the installer:
+```powershell
+dotnet restore ModernDownloadManager.App\ModernDownloadManager.App.csproj
+dotnet build ModernDownloadManager.App\ModernDownloadManager.App.csproj -c Debug -p:Platform=x64
+dotnet build ModernDownloadManager.NativeHost\ModernDownloadManager.NativeHost.csproj -c Debug -p:Platform=x64
+```
 
-    & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" .\installer\ModernDownloadManager.iss
+The native host launches the app from its own output directory. Copy the complete Windows app output beside `ModernDownloadManager.NativeHost.exe`, or use the test setup script:
 
-The installer is created in:
+```powershell
+.\Setup-TestExtension.ps1 -Browser Edge
+```
 
-    artifacts\installer\
+Use `-Browser Chrome` or `-Browser Firefox` for the other supported browsers. Add `-SkipBuild` when matching outputs already exist.
 
-Run the core regression harness (range validation, atomic merge, and retry safety):
+### Register the native host manually
 
-    dotnet restore ModernDownloadManager.Core.Tests\ModernDownloadManager.Core.Tests.csproj --ignore-failed-sources --configfile .nuget\NuGet\NuGet.Config --packages .nuget\packages
-    dotnet run --project ModernDownloadManager.Core.Tests\ModernDownloadManager.Core.Tests.csproj --no-restore
+After building and copying the app beside the host:
 
-## Current limitations ⚠️
+```powershell
+.\native-host-setup\Install-NativeHost.ps1 `
+  -NativeHostExePath .\ModernDownloadManager.NativeHost\bin\x64\Debug\net8.0-windows\win-x64\ModernDownloadManager.NativeHost.exe
+```
 
-- Windows only
-- Unpackaged desktop application
-- Browser extension requires manual loading
-- Automatic browser capture falls back to the browser download if the desktop app is unavailable
-- Browser cookies are held in memory only and are not stored in download history
-- Extension icons are placeholders
-- No automatic update system yet
+This registers the host for the current Windows user under Chrome, Edge, and Firefox. Run `native-host-setup\Uninstall-NativeHost.ps1` to remove those registrations.
 
-## License 📄
+### Release staging and installer
 
-License information will be added before the first stable release.
+```powershell
+.\Build-Release.ps1 -Version 0.1.0
+& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" .\installer\ModernDownloadManager.iss
+```
+
+Staged output is placed under `artifacts/`; the installer is created under the configured installer output directory.
+
+## Linux
+
+The Linux port uses Avalonia and shares `ModernDownloadManager.Core` with Windows and macOS.
+
+### Requirements
+
+- Linux desktop session
+- .NET 8 SDK
+- Chrome/Chromium or Firefox for browser capture
+
+### Build, publish, and register
+
+From the repository root:
+
+```bash
+dotnet restore linux/ModernDownloadManager.App/ModernDownloadManager.App.csproj
+dotnet restore linux/ModernDownloadManager.NativeHost/ModernDownloadManager.NativeHost.csproj
+dotnet build linux/ModernDownloadManager.App/ModernDownloadManager.App.csproj -c Release
+dotnet build linux/ModernDownloadManager.NativeHost/ModernDownloadManager.NativeHost.csproj -c Release
+dotnet publish linux/ModernDownloadManager.App/ModernDownloadManager.App.csproj -c Release -r linux-x64 --self-contained true
+dotnet publish linux/ModernDownloadManager.NativeHost/ModernDownloadManager.NativeHost.csproj -c Release -r linux-x64 --self-contained true
+chmod +x linux/ModernDownloadManager.NativeHost/bin/Release/net8.0/linux-x64/publish/ModernDownloadManager.NativeHost
+./linux/native-host-setup/install-native-host.sh \
+  "$PWD/linux/ModernDownloadManager.NativeHost/bin/Release/net8.0/linux-x64/publish/ModernDownloadManager.NativeHost"
+```
+
+Load `extensions/chromium/` in Chrome/Chromium or `extensions/firefox/manifest.json` temporarily in Firefox. The registration script writes manifests under `$XDG_CONFIG_HOME`, or `$HOME/.config` when that variable is unset.
+
+## macOS
+
+The macOS port uses Avalonia and shares `ModernDownloadManager.Core`. It is currently a development scaffold.
+
+### Requirements
+
+- macOS 12 or newer
+- .NET 8 SDK
+- Xcode Command Line Tools
+- Chrome or Firefox for browser capture
+
+### Build, publish, and register
+
+From the repository root:
+
+```bash
+dotnet restore macos/ModernDownloadManager.App/ModernDownloadManager.App.csproj
+dotnet restore macos/ModernDownloadManager.NativeHost/ModernDownloadManager.NativeHost.csproj
+dotnet build macos/ModernDownloadManager.App/ModernDownloadManager.App.csproj -c Release
+dotnet build macos/ModernDownloadManager.NativeHost/ModernDownloadManager.NativeHost.csproj -c Release
+dotnet publish macos/ModernDownloadManager.App/ModernDownloadManager.App.csproj -c Release -r osx-arm64 --self-contained true
+dotnet publish macos/ModernDownloadManager.NativeHost/ModernDownloadManager.NativeHost.csproj -c Release -r osx-arm64 --self-contained true
+chmod +x macos/ModernDownloadManager.NativeHost/bin/Release/net8.0/osx-arm64/publish/ModernDownloadManager.NativeHost
+./macos/native-host-setup/install-native-host.sh \
+  "$PWD/macos/ModernDownloadManager.NativeHost/bin/Release/net8.0/osx-arm64/publish/ModernDownloadManager.NativeHost"
+```
+
+Use `osx-x64` instead of `osx-arm64` for Intel Macs. Load the Chromium or Firefox extension using the instructions above. Code signing, notarization, `.app` bundling, and signed extension packages are not configured yet.
+
+## Tests
+
+Run the shared core regression harness:
+
+```bash
+dotnet restore ModernDownloadManager.Core.Tests/ModernDownloadManager.Core.Tests.csproj
+dotnet run --project ModernDownloadManager.Core.Tests/ModernDownloadManager.Core.Tests.csproj --no-restore
+```
+
+Run the extension handoff tests:
+
+```bash
+node extensions/tests/handoff.cjs
+```
+
+The tests cover queued, declined, failed, disconnected, parked-download, and browser-fallback paths.
+
+## Security and local files
+
+- Do not commit `extensions/dev-keys/`, browser profiles, `downloads.db3`, build output, or local settings.
+- Native-host manifests contain local executable paths and should be generated on each machine.
+- The extension requests broad host access because it must observe downloads across sites.
+- Cookies are forwarded only for the active handoff and are kept in memory.
+
+## Project status and license
+
+Windows is the primary desktop release. Linux and macOS are development ports. Automatic updates, signed extension releases, stable packaging, and licensing information are not yet available.

@@ -16,8 +16,9 @@ public class DownloadSegment
     public string TempFilePath { get; set; } = string.Empty;
     public SegmentState State { get; set; } = SegmentState.Pending;
 
-    public long TotalBytes => EndByte - StartByte + 1;
-    public bool IsComplete => DownloadedBytes >= TotalBytes;
+    public bool IsOpenEnded => EndByte < StartByte;
+    public long TotalBytes => IsOpenEnded ? 0 : EndByte - StartByte + 1;
+    public bool IsComplete => IsOpenEnded ? State == SegmentState.Completed : DownloadedBytes >= TotalBytes;
 
     /// <summary>The byte offset to resume from, accounting for partial temp-file data already on disk.</summary>
     public long ResumeOffset => StartByte + DownloadedBytes;

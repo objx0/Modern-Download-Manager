@@ -1,0 +1,7 @@
+{
+  "name": "com.moderndownloadmanager.host",
+  "description": "Modern Download Manager macOS native messaging host",
+  "path": "REPLACE_WITH_ABSOLUTE_HOST_PATH",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://gpflfhfbgjbijbocjdjngdfkohaojmaf/"]
+}

@@ -32,8 +32,8 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [Files]
 Source: "{#StageDir}\app\*"; DestDir: "{app}\app"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#StageDir}\extension\*"; DestDir: "{app}\extension"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#StageDir}\extension-firefox\*"; DestDir: "{app}\extension-firefox"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StageDir}\extension\*"; DestDir: "{app}\extensions\chromium"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StageDir}\extension-firefox\*"; DestDir: "{app}\extensions\firefox"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StageDir}\native-host-setup\*"; DestDir: "{app}\native-host-setup"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StageDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
@@ -43,13 +43,12 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\app\{#MyAppExeName}"; Tasks
 
 [Run]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\native-host-setup\Install-NativeHost.ps1"" -NativeHostExePath ""{app}\app\ModernDownloadManager.NativeHost.exe"""; Description: "Register browser integration (Chrome and Edge)"; Flags: runhidden waituntilterminated
-Filename: "explorer.exe"; Parameters: """{app}\extension"""; Description: "Open the extension folder for browser setup"; Flags: postinstall shellexec skipifsilent
+Filename: "explorer.exe"; Parameters: """{app}\extensions"""; Description: "Open the extension folder for browser setup"; Flags: postinstall shellexec skipifsilent
 Filename: "{app}\app\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\native-host-setup\Uninstall-NativeHost.ps1"""; Flags: runhidden waituntilterminated
 
 [UninstallDelete]
-Type: filesandordirs; Name: "{app}\extension"
-Type: filesandordirs; Name: "{app}\extension-firefox"
+Type: filesandordirs; Name: "{app}\extensions"
 Type: filesandordirs; Name: "{app}\native-host-setup"

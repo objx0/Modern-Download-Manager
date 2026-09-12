@@ -22,6 +22,8 @@ internal sealed class TrayIconService : IDisposable
     private readonly string _className = "ModernDownloadManager.Tray." + Guid.NewGuid().ToString("N");
     private IntPtr _messageWindow;
     private IntPtr _icon;
+    private bool _iconAdded;
+    private bool _ownsIcon;
     private bool _disposed;
 
     public TrayIconService(MainWindow window)
@@ -44,13 +46,17 @@ internal sealed class TrayIconService : IDisposable
             IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
         if (_messageWindow == IntPtr.Zero)
             throw new InvalidOperationException("Windows could not create the tray window.");
-        _icon = LoadIcon(IntPtr.Zero, IdiApplication);
+        // The tray uses a slightly heavier variant so it remains legible at
+        // notification-area size. Keep App.ico unchanged for window chrome.
+        _icon = LoadImage(IntPtr.Zero, Path.Combine(AppContext.BaseDirectory, "Assets", "Tray.ico"), 1, 0, 0, 0x0010 | 0x0040);
+        _ownsIcon = _icon != IntPtr.Zero;
+        if (!_ownsIcon) _icon = LoadIcon(IntPtr.Zero, IdiApplication);
         AddTrayIcon("Modern Download Manager");
     }
 
-    public void UpdateTip(string tip) => AddTrayIcon(tip);
+    public void UpdateTip(string tip) => AddTrayIcon(tip, throwOnFailure: false);
 
-    private void AddTrayIcon(string tip)
+    private void AddTrayIcon(string tip, bool throwOnFailure = true)
     {
         var data = new NotifyIconData
         {
@@ -64,9 +70,27 @@ internal sealed class TrayIconService : IDisposable
             Info = string.Empty,
             InfoTitle = string.Empty
         };
-        if (!ShellNotifyIcon(0, ref data))
-            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Shell could not add the Modern Download Manager tray icon.");
+        // NIM_ADD is only for the first registration. Calling it again when a
+        // download completes makes Explorer reject the duplicate tray icon.
+        var message = _iconAdded ? 1u : 0u; // NIM_MODIFY : NIM_ADD
+        if (ShellNotifyIcon(message, ref data))
+        {
+            _iconAdded = true;
+            return;
+        }
 
+        // Explorer can recreate its notification area after a restart. In that
+        // case MODIFY fails because the old icon no longer exists, so register
+        // it again once.
+        if (_iconAdded && ShellNotifyIcon(0, ref data))
+        {
+            _iconAdded = true;
+            return;
+        }
+
+        _iconAdded = false;
+        if (throwOnFailure)
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Windows could not add the Modern Download Manager tray icon.");
     }
 
     private IntPtr WindowProc(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam)
@@ -115,14 +139,18 @@ internal sealed class TrayIconService : IDisposable
 
     private IntPtr WindowNativeHandle() => WinRT.Interop.WindowNative.GetWindowHandle(_window);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr LoadImage(IntPtr instance, string name, uint type, int width, int height, uint flags);
+
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
         var data = new NotifyIconData { Size = (uint)Marshal.SizeOf<NotifyIconData>(), Window = _messageWindow, Id = TrayId, Tip = string.Empty, Info = string.Empty, InfoTitle = string.Empty };
         ShellNotifyIcon(2, ref data);
+        _iconAdded = false;
         if (_messageWindow != IntPtr.Zero) DestroyWindow(_messageWindow);
-        if (_icon != IntPtr.Zero) DestroyIcon(_icon);
+        if (_ownsIcon && _icon != IntPtr.Zero) DestroyIcon(_icon);
         UnregisterClass(_className, GetModuleHandle(null));
     }
 

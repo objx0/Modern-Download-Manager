@@ -8,8 +8,8 @@ namespace ModernDownloadManager.Core.Models;
 public class AppSettings
 {
     public int MaxConcurrentDownloads { get; set; } = 3;
-    public string DefaultDownloadFolder { get; set; } =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+    /// <summary>Resolved by the platform composition root when empty.</summary>
+    public string DefaultDownloadFolder { get; set; } = string.Empty;
 
     /// <summary>0 = unlimited. Applied to newly-added downloads as their initial cap.</summary>
     public long DefaultSpeedLimitBytesPerSecond { get; set; }

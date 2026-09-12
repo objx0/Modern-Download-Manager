@@ -19,7 +19,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = $PSScriptRoot
 $appProject = Join-Path $repoRoot "ModernDownloadManager.App\ModernDownloadManager.App.csproj"
 $hostProject = Join-Path $repoRoot "ModernDownloadManager.NativeHost\ModernDownloadManager.NativeHost.csproj"
-$extensionDir = if ($Browser -eq "Firefox") { Join-Path $repoRoot "extension-firefox" } else { Join-Path $repoRoot "extension" }
+$extensionDir = if ($Browser -eq "Firefox") { Join-Path $repoRoot "extensions\firefox" } else { Join-Path $repoRoot "extensions\chromium" }
 
 if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
     throw "dotnet.exe was not found. Install the .NET 8 SDK first."
@@ -118,6 +118,6 @@ Write-Host "Launching $Browser test profile with the extension loaded..." -Foreg
 Start-Process -FilePath $browserPath -ArgumentList $browserArgs
 Write-Host "" 
 Write-Host "Test profile: $profileDir" -ForegroundColor DarkGray
-if ($Browser -eq "Firefox") { Write-Host "In Firefox, open about:debugging#/runtime/this-firefox and load extension-firefox\manifest.json as a temporary add-on." -ForegroundColor Yellow }
+if ($Browser -eq "Firefox") { Write-Host "In Firefox, open about:debugging#/runtime/this-firefox and load extensions\firefox\manifest.json as a temporary add-on." -ForegroundColor Yellow }
 Write-Host "Use the download URL above, or right-click a downloadable link and choose 'Download with Modern Download Manager'." -ForegroundColor Green
 Write-Host "Close this test browser before running the script again." -ForegroundColor Yellow

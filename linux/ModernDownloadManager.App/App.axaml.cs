@@ -6,6 +6,7 @@ using ModernDownloadManager.Core.Engine;
 using ModernDownloadManager.Core.Ipc;
 using ModernDownloadManager.Core.Models;
 using ModernDownloadManager.Core.Persistence;
+using ModernDownloadManager.Core.Platform;
 using ModernDownloadManager.Core.Scheduling;
 using System.Net;
 
@@ -14,6 +15,7 @@ namespace ModernDownloadManager.Linux;
 public partial class App : Application
 {
     private CancellationTokenSource? _ipcCancellation;
+    private readonly ILocalIpc _localIpc = new NamedPipeIpc();
     private DownloadQueueManager? _queue;
 
     public override void Initialize() => AvaloniaXamlLoader.Load(this);
@@ -26,7 +28,8 @@ public partial class App : Application
             return;
         }
 
-        var dataDirectory = GetDataDirectory();
+        var platformPaths = new DefaultPlatformPaths();
+        var dataDirectory = platformPaths.ApplicationDataDirectory;
         Directory.CreateDirectory(dataDirectory);
         var settings = new AppSettingsStore(Path.Combine(dataDirectory, "settings.json"));
         var startup = InitializeAsync(settings, dataDirectory, desktop);
@@ -38,6 +41,8 @@ public partial class App : Application
         IClassicDesktopStyleApplicationLifetime desktop)
     {
         var settings = await settingsStore.LoadAsync();
+        if (string.IsNullOrWhiteSpace(settings.DefaultDownloadFolder))
+            settings.DefaultDownloadFolder = new DefaultPlatformPaths().DefaultDownloadDirectory;
         var client = new HttpClient(new SocketsHttpHandler
         {
             MaxConnectionsPerServer = 16,
@@ -51,7 +56,7 @@ public partial class App : Application
         var window = new MainWindow(_queue, settings, settingsStore);
         desktop.MainWindow = window;
         _ipcCancellation = new CancellationTokenSource();
-        _ = DownloadPipe.RunServerAsync(request => EnqueueFromBrowserAsync(window, settings, request), _ipcCancellation.Token);
+        _ = _localIpc.RunServerAsync(request => EnqueueFromBrowserAsync(window, settings, request), _ipcCancellation.Token);
         desktop.ShutdownRequested += async (_, _) =>
         {
             _ipcCancellation.Cancel();
@@ -67,7 +72,4 @@ public partial class App : Application
         await Dispatcher.UIThread.InvokeAsync(() => window.AddBrowserDownloadAsync(request, settings));
     }
 
-    private static string GetDataDirectory() =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "ModernDownloadManager");
 }

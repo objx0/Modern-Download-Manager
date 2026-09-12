@@ -21,6 +21,7 @@ public sealed partial class DownloadMiniWindow : Window
         _queue = queue;
         ViewModel = new DownloadItemViewModel(item, queue);
         InitializeComponent();
+        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "App.ico"));
         Root.DataContext = ViewModel;
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(MiniTitleBar);

@@ -14,7 +14,8 @@ public enum FilterMode
     All,
     Active,
     Completed,
-    Category
+    Category,
+    Queued
 }
 
 public partial class MainViewModel : ObservableObject
@@ -22,10 +23,12 @@ public partial class MainViewModel : ObservableObject
     private readonly DownloadQueueManager _queue;
     private readonly AppSettings _settings;
     private readonly Dictionary<Guid, DownloadItemViewModel> _byId = new();
+    private readonly Dictionary<Guid, double> _currentSpeeds = new();
 
     public SettingsViewModel Settings { get; }
 
     public Func<DownloadItemViewModel, Task<RemoveDecision>>? ConfirmRemoveAsync { get; set; }
+    public Func<DownloadItemViewModel, Task>? OpenDownloadWindowAsync { get; set; }
 
     [ObservableProperty]
     private bool isSettingsView;
@@ -40,6 +43,9 @@ public partial class MainViewModel : ObservableObject
 
     public string VersionText => $"Version {Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.1.0-prealpha"}";
     public string RepositoryUrl => "https://github.com/objx0/modern-download-manager";
+
+    public string ActiveDownloadsSummary { get; private set; } = "No active downloads";
+    public string BandwidthSummary { get; private set; } = "0 B/s total";
 
     public ObservableCollection<DownloadItemViewModel> Downloads { get; } = new();
 
@@ -64,8 +70,9 @@ public partial class MainViewModel : ObservableObject
     {
         HeaderText = CurrentFilter switch
         {
-            FilterMode.Active => "Active",
-            FilterMode.Completed => "Completed",
+            FilterMode.Active => "Unfinished",
+            FilterMode.Queued => "Queued",
+            FilterMode.Completed => "Finished",
             FilterMode.Category => CurrentCategory?.ToString() ?? "Category",
             _ => "All Downloads"
         };
@@ -76,9 +83,37 @@ public partial class MainViewModel : ObservableObject
 
     private void RefreshVisibleDownloads()
     {
-        VisibleDownloads.Clear();
-        foreach (var vm in SearchFilteredDownloads)
-            VisibleDownloads.Add(vm);
+        var selected = SelectedDownload;
+        var matching = SearchFilteredDownloads.ToArray();
+        foreach (var item in VisibleDownloads.Where(d => !matching.Contains(d)).ToArray())
+            VisibleDownloads.Remove(item);
+        for (var index = 0; index < matching.Length; index++)
+        {
+            var existingIndex = VisibleDownloads.IndexOf(matching[index]);
+            if (existingIndex < 0) VisibleDownloads.Insert(index, matching[index]);
+            else if (existingIndex != index) VisibleDownloads.Move(existingIndex, index);
+        }
+        SelectedDownload = selected is not null && VisibleDownloads.Contains(selected) ? selected : null;
+    }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasSelection))]
+    private DownloadItemViewModel? selectedDownload;
+
+    public bool HasSelection => SelectedDownload is not null;
+
+    [RelayCommand]
+    private async Task StopAll()
+    {
+        foreach (var item in Downloads.Where(d => d.CanPause).ToArray())
+            await item.PauseCommand.ExecuteAsync(null);
+    }
+
+    [RelayCommand]
+    private async Task ResumeAll()
+    {
+        foreach (var item in Downloads.Where(d => d.CanResume).ToArray())
+            await item.ResumeCommand.ExecuteAsync(null);
     }
 
     [ObservableProperty]
@@ -122,12 +157,15 @@ public partial class MainViewModel : ObservableObject
     {
         var vm = new DownloadItemViewModel(item, _queue);
         vm.ConfirmRemoveAsync = ConfirmRemoveAsync;
+        vm.OpenDownloadWindowAsync = OpenDownloadWindowAsync;
         vm.Removed += OnDownloadRemoved;
         vm.ApplyState(item.State);
         vm.ApplyProgress(item.DownloadedBytes, item.TotalBytes, 0, null);
         _byId[item.Id] = vm;
         Downloads.Insert(0, vm);
+        _currentSpeeds[item.Id] = 0;
         RefreshVisibleDownloads();
+        RefreshSummary();
     }
 
     private void OnDownloadRemoved(object? sender, EventArgs e)
@@ -138,9 +176,11 @@ public partial class MainViewModel : ObservableObject
         App.MainAppWindow?.DispatcherQueue.TryEnqueue(() =>
         {
             _byId.Remove(vm.Id);
+            _currentSpeeds.Remove(vm.Id);
             Downloads.Remove(vm);
             VisibleDownloads.Remove(vm);
             StatusText = $"Removed {vm.FileName}";
+            RefreshSummary();
         });
     }
 
@@ -151,7 +191,11 @@ public partial class MainViewModel : ObservableObject
             // Marshal to UI thread — DispatcherQueue is set on MainWindow; kept
             // simple here via App.MainAppWindow's dispatcher.
             App.MainAppWindow?.DispatcherQueue.TryEnqueue(() =>
-                vm.ApplyProgress(e.DownloadedBytes, e.TotalBytes, e.BytesPerSecond, e.Eta));
+            {
+                vm.ApplyProgress(e.DownloadedBytes, e.TotalBytes, e.BytesPerSecond, e.Eta);
+                _currentSpeeds[e.DownloadId] = e.BytesPerSecond;
+                RefreshSummary();
+            });
         }
     }
 
@@ -162,12 +206,38 @@ public partial class MainViewModel : ObservableObject
             App.MainAppWindow?.DispatcherQueue.TryEnqueue(() =>
             {
                 vm.ApplyState(e.State);
+                if (e.State is not (DownloadState.Downloading or DownloadState.Connecting))
+                    _currentSpeeds[e.DownloadId] = 0;
                 StatusText = e.State == DownloadState.Failed
                     ? $"{vm.FileName} failed: {e.ErrorMessage}"
                     : $"{vm.FileName} — {e.State}";
                 RefreshVisibleDownloads();
+                RefreshSummary();
             });
         }
+    }
+
+    private void RefreshSummary()
+    {
+        var activeCount = Downloads.Count(d => d.State is DownloadState.Downloading
+            or DownloadState.Connecting or DownloadState.Merging);
+        ActiveDownloadsSummary = activeCount switch
+        {
+            0 => "No active downloads",
+            1 => "1 active download",
+            _ => $"{activeCount} active downloads"
+        };
+        BandwidthSummary = $"{FormatBytes(_currentSpeeds.Values.Sum())}/s total";
+        OnPropertyChanged(nameof(ActiveDownloadsSummary));
+        OnPropertyChanged(nameof(BandwidthSummary));
+    }
+
+    private static string FormatBytes(double bytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        var unit = 0;
+        while (bytes >= 1024 && unit < units.Length - 1) { bytes /= 1024; unit++; }
+        return $"{bytes:0.#} {units[unit]}";
     }
 
     public async Task EnqueueDownloadAsync(string url, string destinationDirectory,
@@ -197,8 +267,8 @@ public partial class MainViewModel : ObservableObject
 
     public IEnumerable<DownloadItemViewModel> FilteredDownloads => CurrentFilter switch
     {
-        FilterMode.Active => Downloads.Where(d => d.State is DownloadState.Downloading
-            or DownloadState.Connecting or DownloadState.Queued or DownloadState.Merging or DownloadState.Paused),
+        FilterMode.Active => Downloads.Where(d => d.State != DownloadState.Completed),
+        FilterMode.Queued => Downloads.Where(d => d.State == DownloadState.Queued),
         FilterMode.Completed => Downloads.Where(d => d.State == DownloadState.Completed),
         FilterMode.Category => Downloads.Where(d => d.Category == CurrentCategory),
         _ => Downloads

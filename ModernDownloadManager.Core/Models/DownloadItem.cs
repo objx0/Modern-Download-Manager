@@ -59,4 +59,7 @@ public class DownloadItem
     public double ProgressPercent => TotalBytes > 0
         ? Math.Clamp((double)DownloadedBytes / TotalBytes * 100.0, 0, 100)
         : 0;
+
+    /// <summary>Creates the domain aggregate represented by this persistence row.</summary>
+    public DownloadJob ToJob() => DownloadJob.FromRecord(this);
 }

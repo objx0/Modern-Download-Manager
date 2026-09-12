@@ -10,14 +10,15 @@ namespace ModernDownloadManager.Core.Scheduling;
 /// queue, enforces "max simultaneous downloads", and keeps the repository
 /// in sync so state survives app restarts.
 /// </summary>
-public sealed class DownloadQueueManager : IAsyncDisposable
+public sealed class DownloadQueueManager : IDownloadManager, IAsyncDisposable
 {
     private readonly IDownloadEngine _engine;
-    private readonly DownloadRepository _repository;
+    private readonly IDownloadRepository _repository;
     private readonly SemaphoreSlim _concurrencyGate;
     private readonly ConcurrentDictionary<Guid, DownloadItem> _items = new();
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _itemCancellation = new();
     private readonly ConcurrentDictionary<Guid, Task> _runningTasks = new();
+    private readonly ConcurrentDictionary<Guid, byte> _starting = new();
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _lifecycleLocks = new();
 
     public int MaxConcurrentDownloads { get; }
@@ -30,7 +31,7 @@ public sealed class DownloadQueueManager : IAsyncDisposable
     /// so any listening UI can add a view model for it regardless of source.</summary>
     public event EventHandler<DownloadItem>? ItemAdded;
 
-    public DownloadQueueManager(IDownloadEngine engine, DownloadRepository repository, int maxConcurrentDownloads = 3)
+    public DownloadQueueManager(IDownloadEngine engine, IDownloadRepository repository, int maxConcurrentDownloads = 3)
     {
         _engine = engine;
         _repository = repository;
@@ -38,11 +39,24 @@ public sealed class DownloadQueueManager : IAsyncDisposable
         _concurrencyGate = new SemaphoreSlim(maxConcurrentDownloads);
 
         _engine.ProgressChanged += (s, e) => ProgressChanged?.Invoke(this, e);
-        _engine.StateChanged += async (s, e) =>
+        _engine.ProgressChanged += (s, e) =>
         {
-            StateChanged?.Invoke(this, e);
             if (_items.TryGetValue(e.DownloadId, out var item))
-                await _repository.UpsertAsync(item);
+            {
+                item.DownloadedBytes = e.DownloadedBytes;
+                item.TotalBytes = e.TotalBytes;
+            }
+        };
+        _engine.StateChanged += (s, e) =>
+        {
+            if (_items.TryGetValue(e.DownloadId, out var item))
+            {
+                item.State = e.State;
+                item.ErrorMessage = e.ErrorMessage;
+            }
+            StateChanged?.Invoke(this, e);
+            if (_items.TryGetValue(e.DownloadId, out var persistedItem))
+                _ = PersistStateSafelyAsync(persistedItem);
         };
     }
 
@@ -50,10 +64,22 @@ public sealed class DownloadQueueManager : IAsyncDisposable
     {
         foreach (var item in await _repository.GetAllAsync())
         {
+            // A process can be interrupted after the final file is written but
+            // before the persisted state changes from Paused. The final file is
+            // authoritative in that case.
+            if (item.State is not DownloadState.Completed and not DownloadState.Cancelled &&
+                item.TotalBytes > 0 && item.DownloadedBytes >= item.TotalBytes &&
+                File.Exists(item.FullPath) && new FileInfo(item.FullPath).Length >= item.TotalBytes)
+            {
+                TransitionTo(item, DownloadState.Completed, persist: false);
+                item.DownloadedBytes = item.TotalBytes;
+                item.CompletedAt ??= File.GetLastWriteTimeUtc(item.FullPath);
+            }
+
             // Anything that was mid-flight when the app last closed comes back as Paused,
             // not Downloading — we never resume network activity without the user asking.
             if (item.State is DownloadState.Downloading or DownloadState.Connecting or DownloadState.Merging)
-                item.State = DownloadState.Paused;
+                TransitionTo(item, DownloadState.Paused, persist: false);
 
             _items[item.Id] = item;
             _itemCancellation[item.Id] = new CancellationTokenSource();
@@ -78,6 +104,25 @@ public sealed class DownloadQueueManager : IAsyncDisposable
         DownloadCategory? category = null,
         bool startImmediately = true)
     {
+        return await EnqueueAsync(url, new DownloadOptions
+        {
+            DestinationDirectory = destinationDirectory,
+            SuggestedFileName = suggestedFileName,
+            SpeedLimitBytesPerSecond = speedLimitBytesPerSecond,
+            SegmentCount = segmentCount,
+            ReferrerUrl = referrer,
+            CookieHeader = cookie,
+            UserAgent = userAgent,
+            Category = category,
+            StartImmediately = startImmediately
+        });
+    }
+
+    public async Task<DownloadItem> EnqueueAsync(string url, DownloadOptions options)
+    {
+        if (options is null)
+            throw new ArgumentNullException(nameof(options));
+
         // Only trust a URL-path-derived guess if it actually looks like a filename
         // (has an extension) — otherwise leave it for the engine to fill in from
         // Content-Disposition/redirect once headers arrive, instead of showing
@@ -86,14 +131,14 @@ public sealed class DownloadQueueManager : IAsyncDisposable
             (parsedUrl.Scheme != Uri.UriSchemeHttp && parsedUrl.Scheme != Uri.UriSchemeHttps))
             throw new ArgumentException("Only HTTP and HTTPS download URLs are supported.", nameof(url));
 
-        if (string.IsNullOrWhiteSpace(destinationDirectory))
-            throw new ArgumentException("A destination directory is required.", nameof(destinationDirectory));
+        if (string.IsNullOrWhiteSpace(options.DestinationDirectory))
+            throw new ArgumentException("A destination directory is required.", nameof(options));
 
-        destinationDirectory = Path.GetFullPath(destinationDirectory);
+        var destinationDirectory = Path.GetFullPath(options.DestinationDirectory);
         var urlGuess = Path.GetFileName(parsedUrl.LocalPath);
         var looksLikeRealFileName = !string.IsNullOrWhiteSpace(urlGuess) && Path.HasExtension(urlGuess);
 
-        suggestedFileName = SanitizeFileName(suggestedFileName);
+        var suggestedFileName = SanitizeFileName(options.SuggestedFileName);
 
         var fileName = suggestedFileName
             ?? (looksLikeRealFileName ? urlGuess : "Fetching name…");
@@ -104,13 +149,13 @@ public sealed class DownloadQueueManager : IAsyncDisposable
             FileName = fileName,
             FileNameIsExplicit = suggestedFileName is not null,
             DestinationDirectory = destinationDirectory,
-            Category = category ?? DownloadCategoryResolver.Resolve(fileName),
-            State = startImmediately ? DownloadState.Queued : DownloadState.Paused,
-            SpeedLimitBytesPerSecond = speedLimitBytesPerSecond,
-            SegmentCount = segmentCount,
-            ReferrerUrl = referrer,
-            CookieHeader = cookie,
-            UserAgent = userAgent
+            Category = options.Category ?? DownloadCategoryResolver.Resolve(fileName),
+            State = options.StartImmediately ? DownloadState.Queued : DownloadState.Paused,
+            SpeedLimitBytesPerSecond = options.SpeedLimitBytesPerSecond,
+            SegmentCount = options.SegmentCount,
+            ReferrerUrl = options.ReferrerUrl,
+            CookieHeader = options.CookieHeader,
+            UserAgent = options.UserAgent
         };
 
         _items[item.Id] = item;
@@ -119,7 +164,7 @@ public sealed class DownloadQueueManager : IAsyncDisposable
         await _repository.UpsertAsync(item);
         ItemAdded?.Invoke(this, item);
 
-        if (startImmediately)
+        if (options.StartImmediately)
             StartQueuedRun(item);
         return item;
     }
@@ -145,8 +190,14 @@ public sealed class DownloadQueueManager : IAsyncDisposable
 
     private async Task RunWhenSlotAvailableAsync(DownloadItem item)
     {
-        if (!_itemCancellation.TryGetValue(item.Id, out var itemCts))
+        if (!_starting.TryAdd(item.Id, 0))
             return;
+
+        if (!_itemCancellation.TryGetValue(item.Id, out var itemCts))
+        {
+            _starting.TryRemove(item.Id, out _);
+            return;
+        }
 
         try
         {
@@ -154,6 +205,7 @@ public sealed class DownloadQueueManager : IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
+            _starting.TryRemove(item.Id, out _);
             return;
         }
 
@@ -162,11 +214,24 @@ public sealed class DownloadQueueManager : IAsyncDisposable
             if (itemCts.IsCancellationRequested || item.State != DownloadState.Queued)
                 return;
 
-            await _engine.StartAsync(item);
+            var job = item.ToJob();
+            await _engine.StartAsync(job, itemCts.Token);
+            var completedRecord = job.ToRecord();
+            item.FileName = completedRecord.FileName;
+            item.TotalBytes = completedRecord.TotalBytes;
+            item.DownloadedBytes = completedRecord.DownloadedBytes;
+            item.State = completedRecord.State;
+            item.SupportsResume = completedRecord.SupportsResume;
+            item.ETag = completedRecord.ETag;
+            item.LastModified = completedRecord.LastModified;
+            item.CompletedAt = completedRecord.CompletedAt;
+            item.ErrorMessage = completedRecord.ErrorMessage;
+            await _repository.UpsertAsync(item);
         }
         finally
         {
             _concurrencyGate.Release();
+            _starting.TryRemove(item.Id, out _);
         }
     }
 
@@ -181,8 +246,7 @@ public sealed class DownloadQueueManager : IAsyncDisposable
         {
             if (_itemCancellation.TryGetValue(id, out var queuedCts))
                 queuedCts.Cancel();
-            item.State = DownloadState.Paused;
-            await PersistStateAsync(item, DownloadState.Paused);
+            await TransitionToAsync(item, DownloadState.Paused);
             return;
         }
 
@@ -203,8 +267,7 @@ public sealed class DownloadQueueManager : IAsyncDisposable
 
         if (item.State is DownloadState.Queued or DownloadState.Paused or DownloadState.Failed)
         {
-            item.State = DownloadState.Cancelled;
-            await PersistStateAsync(item, DownloadState.Cancelled);
+            await TransitionToAsync(item, DownloadState.Cancelled);
             CleanupTempFiles(item);
             return;
         }
@@ -217,7 +280,7 @@ public sealed class DownloadQueueManager : IAsyncDisposable
 
     public async Task ResumeAsync(Guid id)
     {
-        if (!_items.TryGetValue(id, out var item) || item.State is not (DownloadState.Paused or DownloadState.Failed))
+        if (!_items.TryGetValue(id, out var item) || item.State is not (DownloadState.Paused or DownloadState.Failed or DownloadState.Cancelled))
             return;
 
         using var guard = await AcquireLifecycleLockAsync(id);
@@ -226,8 +289,7 @@ public sealed class DownloadQueueManager : IAsyncDisposable
         if (_itemCancellation.TryRemove(id, out var previous))
             previous.Dispose();
         _itemCancellation[id] = new CancellationTokenSource();
-        item.State = DownloadState.Queued;
-        await PersistStateAsync(item, DownloadState.Queued);
+        await TransitionToAsync(item, DownloadState.Queued);
         StartQueuedRun(item);
     }
 
@@ -266,10 +328,30 @@ public sealed class DownloadQueueManager : IAsyncDisposable
         return new Releaser(lifecycleLock);
     }
 
-    private async Task PersistStateAsync(DownloadItem item, DownloadState state)
+    private void TransitionTo(DownloadItem item, DownloadState state, bool persist)
     {
-        StateChanged?.Invoke(this, new DownloadStateChangedEventArgs { DownloadId = item.Id, State = state });
+        DownloadLifecycle.EnsureCanTransition(item.State, state);
+        item.State = state;
+        if (persist)
+            StateChanged?.Invoke(this, new DownloadStateChangedEventArgs { DownloadId = item.Id, State = state });
+    }
+
+    private async Task TransitionToAsync(DownloadItem item, DownloadState state)
+    {
+        TransitionTo(item, state, persist: true);
         await _repository.UpsertAsync(item);
+    }
+
+    private async Task PersistStateSafelyAsync(DownloadItem item)
+    {
+        try
+        {
+            await _repository.UpsertAsync(item);
+        }
+        catch (Exception ex)
+        {
+            item.ErrorMessage = $"Could not persist download state: {ex.Message}";
+        }
     }
 
     private static async Task IgnoreCompletionAsync(Task task)

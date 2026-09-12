@@ -8,21 +8,25 @@ namespace ModernDownloadManager.Core.Engine;
 public sealed class ThrottledStream : Stream
 {
     private readonly Stream _inner;
+    private readonly BandwidthLimiter? _sharedLimiter;
     private long _bytesThisWindow;
     private DateTime _windowStart = DateTime.UtcNow;
 
     /// <summary>0 = unlimited.</summary>
     public long BytesPerSecond { get; set; }
 
-    public ThrottledStream(Stream inner, long bytesPerSecond = 0)
+    public ThrottledStream(Stream inner, long bytesPerSecond = 0, BandwidthLimiter? sharedLimiter = null)
     {
         _inner = inner;
         BytesPerSecond = bytesPerSecond;
+        _sharedLimiter = sharedLimiter;
     }
 
     public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
-        if (BytesPerSecond > 0)
+        if (_sharedLimiter is not null)
+            await _sharedLimiter.WaitAsync(count, cancellationToken);
+        else if (BytesPerSecond > 0)
             await ThrottleAsync(count, cancellationToken);
 
         await _inner.WriteAsync(buffer.AsMemory(offset, count), cancellationToken);
@@ -30,7 +34,9 @@ public sealed class ThrottledStream : Stream
 
     public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
     {
-        if (BytesPerSecond > 0)
+        if (_sharedLimiter is not null)
+            await _sharedLimiter.WaitAsync(buffer.Length, cancellationToken);
+        else if (BytesPerSecond > 0)
             await ThrottleAsync(buffer.Length, cancellationToken);
 
         await _inner.WriteAsync(buffer, cancellationToken);

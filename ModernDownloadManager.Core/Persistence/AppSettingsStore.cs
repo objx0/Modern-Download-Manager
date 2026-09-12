@@ -9,7 +9,7 @@ namespace ModernDownloadManager.Core.Persistence;
 /// is unreliable for unpackaged apps, whereas a plain file next to the
 /// SQLite DB (same app-data folder) works identically either way.
 /// </summary>
-public sealed class AppSettingsStore
+public sealed class AppSettingsStore : IAppSettingsStore
 {
     private readonly string _filePath;
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };

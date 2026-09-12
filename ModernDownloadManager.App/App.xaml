@@ -11,6 +11,7 @@
                 <ResourceDictionary Source="Styles/Theme.xaml" />
             </ResourceDictionary.MergedDictionaries>
 
+            <conv:CategoryGlyphConverter x:Key="CategoryGlyph" />
             <conv:BoolToVisibilityConverter x:Key="BoolToVisibility" />
             <conv:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisibility" />
         </ResourceDictionary>

@@ -10,7 +10,7 @@ namespace ModernDownloadManager.NativeHost;
 /// Chrome/Edge spawn this process fresh for each chrome.runtime.sendNativeMessage
 /// call: read exactly one length-prefixed JSON message from stdin, act on it,
 /// write exactly one length-prefixed JSON response to stdout, exit. No
-/// persistent state — that all lives in the main app via the local pipe.
+/// persistent state â€” that all lives in the main app via the local pipe.
 /// </summary>
 internal static class Program
 {
@@ -25,17 +25,17 @@ internal static class Program
                 return;
             }
 
-            // Try handing off to an already-running app instance first — avoids
-            // spawning a redundant second process for every single download.
-            var delivered = await DownloadPipe.TrySendWithRetryAsync(request);
-
-            if (!delivered)
+            var status = await DownloadPipe.TryConfirmedCaptureAsync(request, TimeSpan.FromMilliseconds(500));
+            if (status is null)
             {
                 LaunchApp();
-                delivered = await DownloadPipe.TrySendWithRetryAsync(request, attempts: 20, timeoutMilliseconds: 500);
+                for (var attempt = 0; attempt < 20 && status is null; attempt++)
+                {
+                    status = await DownloadPipe.TryConfirmedCaptureAsync(request, TimeSpan.FromMilliseconds(500));
+                    if (status is null) await Task.Delay(150);
+                }
             }
-
-            await WriteMessageAsync(new { status = delivered ? "queued" : "not-ready" });
+            await WriteMessageAsync(new { status = status ?? "not-ready" });
         }
         catch (Exception ex)
         {

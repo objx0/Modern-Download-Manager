@@ -25,6 +25,7 @@ public partial class DownloadItemViewModel : ObservableObject
     public DownloadItem Model { get; }
     public event EventHandler? Removed;
     public Func<DownloadItemViewModel, Task<RemoveDecision>>? ConfirmRemoveAsync { get; set; }
+    public Func<DownloadItemViewModel, Task>? OpenDownloadWindowAsync { get; set; }
 
     public DownloadItemViewModel(DownloadItem model, DownloadQueueManager queue)
     {
@@ -42,9 +43,11 @@ public partial class DownloadItemViewModel : ObservableObject
         : string.Empty;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(TableStatusText))]
     private double progressPercent;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(TableStatusText))]
     private DownloadState state;
 
     [ObservableProperty]
@@ -55,6 +58,13 @@ public partial class DownloadItemViewModel : ObservableObject
 
     [ObservableProperty]
     private string etaText = string.Empty;
+
+    public string TableStatusText => State switch
+    {
+        DownloadState.Downloading => $"{ProgressPercent:0.#}%",
+        DownloadState.Completed => "Completed",
+        _ => State.ToString()
+    };
 
     public void ApplyProgress(long downloaded, long total, double bytesPerSecond, TimeSpan? eta)
     {
@@ -94,6 +104,8 @@ public partial class DownloadItemViewModel : ObservableObject
         OnPropertyChanged(nameof(CanResume));
         OnPropertyChanged(nameof(CanOpenFile));
         OnPropertyChanged(nameof(CanOpenFolder));
+        OnPropertyChanged(nameof(CanShowFolder));
+        OnPropertyChanged(nameof(CanShowDownloadWindow));
         OnPropertyChanged(nameof(CanShowMini));
         OnPropertyChanged(nameof(CanCancel));
         OnPropertyChanged(nameof(DownloadedDateText));
@@ -103,6 +115,10 @@ public partial class DownloadItemViewModel : ObservableObject
     public bool CanResume => State is DownloadState.Paused or DownloadState.Failed;
     public bool CanOpenFile => State == DownloadState.Completed && File.Exists(Model.FullPath);
     public bool CanOpenFolder => Directory.Exists(Model.DestinationDirectory);
+    public bool CanShowFolder => State == DownloadState.Completed && CanOpenFolder;
+    public bool CanShowDownloadWindow => State is DownloadState.Queued or DownloadState.Connecting
+        or DownloadState.Downloading or DownloadState.Paused or DownloadState.Merging
+        or DownloadState.Cancelled;
     public bool CanShowMini => State is DownloadState.Queued or DownloadState.Connecting or DownloadState.Downloading or DownloadState.Merging or DownloadState.Paused;
     public bool CanCancel => State is not DownloadState.Completed and not DownloadState.Cancelled;
 
@@ -113,7 +129,6 @@ public partial class DownloadItemViewModel : ObservableObject
     private async Task Resume()
     {
         await _queue.ResumeAsync(Id);
-        ModernDownloadManager.App.App.ShowMiniFor(Id);
     }
 
     [RelayCommand]
@@ -128,6 +143,12 @@ public partial class DownloadItemViewModel : ObservableObject
         if (decision == RemoveDecision.Cancel)
             return;
         await _queue.RemoveAsync(Id, decision == RemoveDecision.DeleteFile);
+        Removed?.Invoke(this, EventArgs.Empty);
+    }
+
+    public async Task RemoveFromListAsync()
+    {
+        await _queue.RemoveAsync(Id, deleteFile: false);
         Removed?.Invoke(this, EventArgs.Empty);
     }
 
@@ -146,6 +167,13 @@ public partial class DownloadItemViewModel : ObservableObject
         {
             UseShellExecute = true
         });
+    }
+
+    [RelayCommand]
+    private async Task OpenDownloadWindow()
+    {
+        if (CanShowDownloadWindow && OpenDownloadWindowAsync is not null)
+            await OpenDownloadWindowAsync(this);
     }
 
     [RelayCommand]

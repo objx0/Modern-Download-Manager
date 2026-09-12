@@ -14,6 +14,7 @@ using ModernDownloadManager.Core.Engine;
 using ModernDownloadManager.Core.Ipc;
 using ModernDownloadManager.Core.Models;
 using ModernDownloadManager.Core.Persistence;
+using ModernDownloadManager.Core.Platform;
 using ModernDownloadManager.Core.Scheduling;
 
 namespace ModernDownloadManager.App;
@@ -35,6 +36,7 @@ public partial class App : Application
     public static AppSettingsStore? SettingsStore { get; private set; }
 
     private readonly CancellationTokenSource _pipeServerCts = new();
+    private readonly ILocalIpc _localIpc = new NamedPipeIpc();
     private AppSettings? _settings;
     private TrayIconService? _trayIcon;
     private readonly Dictionary<Guid, DownloadMiniWindow> _miniWindows = new();
@@ -76,13 +78,15 @@ public partial class App : Application
             return;
         }
 
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var appDataDir = Path.Combine(localAppData, "ModernDownloadManager");
+        var platformPaths = new DefaultPlatformPaths();
+        var appDataDir = platformPaths.ApplicationDataDirectory;
         Directory.CreateDirectory(appDataDir);
         _appDataDir = appDataDir;
 
         SettingsStore = new AppSettingsStore(Path.Combine(appDataDir, "settings.json"));
         _settings = await SettingsStore.LoadAsync();
+        if (string.IsNullOrWhiteSpace(_settings.DefaultDownloadFolder))
+            _settings.DefaultDownloadFolder = platformPaths.DefaultDownloadDirectory;
 
         var httpClient = new HttpClient(new SocketsHttpHandler
         {
@@ -117,7 +121,7 @@ public partial class App : Application
         // Serves the browser extension's native-messaging host: if it's already
         // running (this instance), the host hands the download straight over
         // the pipe instead of launching a second process.
-        _ = DownloadPipe.RunServerAsync(HandleExtensionRequestAsync, _pipeServerCts.Token);
+        _ = DownloadPipe.RunConfirmedServerAsync(HandleExtensionRequestAsync, _pipeServerCts.Token);
 
         // Cold-start case: the native host launched us fresh with a pending
         // download because nothing was listening on the pipe yet.
@@ -252,7 +256,7 @@ public partial class App : Application
         app._miniWindows[id] = new DownloadMiniWindow(item, QueueManager);
     }
 
-    private Task HandleExtensionRequestAsync(DownloadRequestMessage request) =>
+    private Task<bool> HandleExtensionRequestAsync(DownloadRequestMessage request) =>
         EnqueueFromExtensionAsync(request);
 
     private void OnQueueStateChanged(object? sender, DownloadStateChangedEventArgs e)
@@ -277,10 +281,10 @@ public partial class App : Application
         if (!HasPendingDownloads())
             _trayIcon?.UpdateTip("Modern Download Manager - Download complete");
     }
-    private async Task EnqueueFromExtensionAsync(DownloadRequestMessage request)
+    private async Task<bool> EnqueueFromExtensionAsync(DownloadRequestMessage request)
     {
-        if (QueueManager is null || _settings is null)
-            return;
+        if (QueueManager is null || _settings is null || !_settings.BrowserCaptureEnabled)
+            return false;
 
         if (request.TotalBytes >= 0 && request.TotalBytes < _settings.MinimumCaptureSizeBytes)
         {
@@ -292,15 +296,14 @@ public partial class App : Application
                     .BuildNotification());
             }
             catch (Exception) { }
-            return;
+            return false;
         }
 
         if (MainAppWindow is not MainWindow window)
-            return;
+            return false;
 
         var item = await window.ShowDownloadDialogAndEnqueueAsync(request.Url, request.SuggestedFileName,
-            request.Referrer, request.Cookie, request.UserAgent);
-        if (item is null)
-            return;
+            request.Referrer, request.Cookie, request.UserAgent, request.TotalBytes, waitForAcceptance: true);
+        return item is not null;
     }
 }

@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Buffers;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using ModernDownloadManager.Core.Models;
@@ -33,19 +35,51 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
         });
     }
 
+    public async Task StartAsync(DownloadItem item, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        var job = item.ToJob();
+        try
+        {
+            await StartAsync(job, cancellationToken);
+        }
+        finally
+        {
+            var updated = job.ToRecord();
+            item.FileName = updated.FileName;
+            item.TotalBytes = updated.TotalBytes;
+            item.DownloadedBytes = updated.DownloadedBytes;
+            item.State = updated.State;
+            item.SupportsResume = updated.SupportsResume;
+            item.ETag = updated.ETag;
+            item.LastModified = updated.LastModified;
+            item.CompletedAt = updated.CompletedAt;
+            item.ErrorMessage = updated.ErrorMessage;
+        }
+    }
+
     private sealed class RuntimeContext
     {
-        public required DownloadItem Item { get; init; }
+        public required DownloadJob Item { get; init; }
         public required List<DownloadSegment> Segments { get; init; }
+        public BandwidthLimiter? BandwidthLimiter { get; init; }
         public CancellationTokenSource Cts { get; } = new();
         public long TotalDownloadedSnapshot;
-        public DateTime LastProgressReport = DateTime.MinValue;
+        public long LastProgressTimestamp = Stopwatch.GetTimestamp();
+        public int ReportingProgress;
         public long BytesSinceLastReport;
     }
 
-    public async Task StartAsync(DownloadItem item, CancellationToken cancellationToken = default)
+    public async Task StartAsync(DownloadJob item, CancellationToken cancellationToken = default)
     {
-        var ctx = new RuntimeContext { Item = item, Segments = new List<DownloadSegment>() };
+        var ctx = new RuntimeContext
+        {
+            Item = item,
+            Segments = new List<DownloadSegment>(),
+            BandwidthLimiter = item.Options.SpeedLimitBytesPerSecond > 0
+                ? new BandwidthLimiter(item.Options.SpeedLimitBytesPerSecond)
+                : null
+        };
         _active[item.Id] = ctx;
 
         try
@@ -54,19 +88,19 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
 
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ctx.Cts.Token, cancellationToken);
             var ct = linkedCts.Token;
-            var previousETag = item.ETag;
-            var previousLastModified = item.LastModified;
-            var hadPartialDownload = item.DownloadedBytes > 0 || Directory.Exists(GetTempDir(item));
+            var previousETag = item.Runtime.ETag;
+            var previousLastModified = item.Runtime.LastModified;
+            var hadPartialDownload = item.Runtime.DownloadedBytes > 0 || Directory.Exists(GetTempDir(item));
             var probe = await ProbeAsync(item, ct);
-            item.TotalBytes = probe.ContentLength ?? item.TotalBytes;
-            item.SupportsResume = probe.AcceptsRanges;
-            item.ETag = probe.ETag;
-            item.LastModified = probe.LastModified;
+            item.Runtime.TotalBytes = probe.ContentLength ?? item.Runtime.TotalBytes;
+            item.Runtime.SupportsResume = probe.AcceptsRanges && item.Runtime.TotalBytes > 0;
+            item.Runtime.ETag = probe.ETag;
+            item.Runtime.LastModified = probe.LastModified;
 
             if (!item.FileNameIsExplicit && !string.IsNullOrWhiteSpace(probe.SuggestedFileName))
             {
                 item.FileName = probe.SuggestedFileName;
-                item.Category = DownloadCategoryResolver.Resolve(item.FileName);
+                item.Options.Category = DownloadCategoryResolver.Resolve(item.FileName);
             }
 
             Directory.CreateDirectory(item.DestinationDirectory);
@@ -74,46 +108,31 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
             if (hadPartialDownload && ValidatorsChanged(previousETag, previousLastModified, probe.ETag, probe.LastModified))
             {
                 CleanupTempDir(tempDir);
-                item.DownloadedBytes = 0;
+                item.Runtime.DownloadedBytes = 0;
             }
             Directory.CreateDirectory(tempDir);
 
             ctx.Segments.AddRange(BuildSegments(item, tempDir));
-            item.DownloadedBytes = ctx.Segments.Sum(s => s.DownloadedBytes);
-            ctx.TotalDownloadedSnapshot = item.DownloadedBytes;
+            item.Runtime.DownloadedBytes = ctx.Segments.Sum(s => s.DownloadedBytes);
+            ctx.TotalDownloadedSnapshot = item.Runtime.DownloadedBytes;
 
             SetState(item, DownloadState.Downloading);
 
-            var maxParallel = Math.Max(1, ctx.Segments.Count);
-            using var gate = new SemaphoreSlim(maxParallel);
-            var tasks = ctx.Segments.Select(async segment =>
-            {
-                await gate.WaitAsync(ct);
-                try
-                {
-                    await DownloadSegmentAsync(item, ctx, segment, ct);
-                }
-                finally
-                {
-                    gate.Release();
-                }
-            });
-
-            await Task.WhenAll(tasks);
+            await Task.WhenAll(ctx.Segments.Select(segment => DownloadSegmentAsync(item, ctx, segment, ct)));
 
             if (ctx.Cts.IsCancellationRequested)
                 return; // paused or cancelled — state already set by PauseAsync/CancelAsync
 
             SetState(item, DownloadState.Merging);
-            await MergeSegmentsAsync(item, ctx.Segments);
+            await MergeSegmentsAsync(item, ctx.Segments, ct);
 
             // Some servers omit Content-Length. Once the merged file exists, its
             // length is the authoritative completed size for both persistence and
             // the UI (and prevents a completed row from displaying 0 B / 0 B).
             if (File.Exists(item.FullPath))
-                item.TotalBytes = new FileInfo(item.FullPath).Length;
-            item.CompletedAt = DateTimeOffset.UtcNow;
-            item.DownloadedBytes = item.TotalBytes;
+                item.Runtime.TotalBytes = new FileInfo(item.FullPath).Length;
+            item.Runtime.CompletedAt = DateTimeOffset.UtcNow;
+            item.Runtime.DownloadedBytes = item.Runtime.TotalBytes;
             SetState(item, DownloadState.Completed);
 
             CleanupTempDir(tempDir);
@@ -124,12 +143,13 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
         }
         catch (Exception ex)
         {
-            item.ErrorMessage = ex.Message;
+            item.Runtime.ErrorMessage = ex.Message;
             SetState(item, DownloadState.Failed, ex.Message);
         }
         finally
         {
             _active.TryRemove(item.Id, out _);
+            ctx.Cts.Dispose();
         }
     }
 
@@ -137,7 +157,7 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
     {
         if (_active.TryGetValue(downloadId, out var ctx))
         {
-            ctx.Item.State = DownloadState.Paused;
+            ctx.Item.Runtime.State = DownloadState.Paused;
             SetState(ctx.Item, DownloadState.Paused);
             ctx.Cts.Cancel();
         }
@@ -160,7 +180,7 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
     private readonly record struct ProbeResult(
         long? ContentLength, bool AcceptsRanges, string? ETag, DateTimeOffset? LastModified, string? SuggestedFileName);
 
-    private async Task<ProbeResult> ProbeAsync(DownloadItem item, CancellationToken ct)
+    private async Task<ProbeResult> ProbeAsync(DownloadJob item, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(HttpMethod.Head, item.Url);
         ApplyRequestHeaders(request, item);
@@ -200,13 +220,20 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
                              || primary.StatusCode == HttpStatusCode.PartialContent
                              || (secondary?.StatusCode == HttpStatusCode.PartialContent);
 
+        // A few media CDNs return a misleading Content-Length on HEAD (often
+        // the probe/manifest size). Prefer the authoritative total from a
+        // ranged GET before trusting HEAD's Content-Length.
         long? length = primary.Content.Headers.ContentRange?.Length
-                        ?? primary.Content.Headers.ContentLength
                         ?? secondary?.Content.Headers.ContentRange?.Length
+                        ?? primary.Content.Headers.ContentLength
                         ?? secondary?.Content.Headers.ContentLength;
 
+        var mediaType = primary.Content.Headers.ContentType?.MediaType
+                        ?? secondary?.Content.Headers.ContentType?.MediaType;
         if (string.IsNullOrEmpty(fileName))
-            fileName = SynthesizeFileName(item.Url, primary.Content.Headers.ContentType?.MediaType);
+            fileName = SynthesizeFileName(item.Url, mediaType);
+        else
+            fileName = EnsureMediaExtension(fileName, mediaType);
 
         return new ProbeResult(
             length,
@@ -216,7 +243,7 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
             fileName);
     }
 
-    private async Task<HttpResponseMessage> ProbeViaRangedGetAsync(DownloadItem item, CancellationToken ct)
+    private async Task<HttpResponseMessage> ProbeViaRangedGetAsync(DownloadJob item, CancellationToken ct)
     {
         using var getRequest = new HttpRequestMessage(HttpMethod.Get, item.Url);
         ApplyRequestHeaders(getRequest, item);
@@ -292,20 +319,48 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
     private static string SynthesizeFileName(string url, string? mediaType)
     {
         var host = TryParse(url)?.Host.Split('.').FirstOrDefault() ?? "download";
-        var ext = mediaType switch
-        {
-            "video/mp4" => ".mp4",
-            "video/webm" => ".webm",
-            "video/x-matroska" => ".mkv",
-            "audio/mpeg" => ".mp3",
-            "audio/mp4" => ".m4a",
-            "application/pdf" => ".pdf",
-            "application/zip" => ".zip",
-            "image/jpeg" => ".jpg",
-            "image/png" => ".png",
-            _ => ""
-        };
+        var ext = ExtensionForMediaType(mediaType) ?? "";
         return $"{host}-{DateTime.Now:yyyyMMdd-HHmmss}{ext}";
+    }
+
+    private static string EnsureMediaExtension(string fileName, string? mediaType)
+    {
+        if (Path.HasExtension(fileName))
+            return fileName;
+
+        var extension = ExtensionForMediaType(mediaType);
+        return extension is null ? fileName : fileName + extension;
+    }
+
+    private static string? ExtensionForMediaType(string? mediaType) => mediaType?.ToLowerInvariant() switch
+    {
+        "video/mp4" => ".mp4",
+        "video/webm" => ".webm",
+        "video/x-matroska" => ".mkv",
+        "video/quicktime" => ".mov",
+        "video/x-msvideo" => ".avi",
+        "audio/mpeg" => ".mp3",
+        "audio/mp4" => ".m4a",
+        "application/pdf" => ".pdf",
+        "application/zip" => ".zip",
+        "image/jpeg" => ".jpg",
+        "image/png" => ".png",
+        _ => null
+    };
+
+    private static string? DetectExtension(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length >= 8 && bytes[4] == (byte)'f' && bytes[5] == (byte)'t' &&
+            bytes[6] == (byte)'y' && bytes[7] == (byte)'p')
+            return ".mp4";
+        if (bytes.Length >= 4 && bytes[0] == 0x1A && bytes[1] == 0x45 &&
+            bytes[2] == 0xDF && bytes[3] == 0xA3)
+            return ".webm";
+        if (bytes.Length >= 12 && bytes[0] == (byte)'R' && bytes[1] == (byte)'I' &&
+            bytes[2] == (byte)'F' && bytes[3] == (byte)'F' && bytes[8] == (byte)'A' &&
+            bytes[9] == (byte)'V' && bytes[10] == (byte)'I' && bytes[11] == (byte)' ')
+            return ".avi";
+        return null;
     }
 
     private static string SanitizeFileName(string name)
@@ -317,30 +372,30 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
 
     // --- Segment planning ---
 
-    private List<DownloadSegment> BuildSegments(DownloadItem item, string tempDir)
+    private List<DownloadSegment> BuildSegments(DownloadJob item, string tempDir)
     {
         var segments = new List<DownloadSegment>();
 
-        var canSplit = item.SupportsResume && item.TotalBytes >= MinBytesPerSegment;
-        var count = canSplit ? Math.Clamp(item.SegmentCount, 1, 16) : 1;
+        var canSplit = item.Runtime.SupportsResume && item.Runtime.TotalBytes >= MinBytesPerSegment;
+        var count = canSplit ? Math.Clamp(item.Options.SegmentCount, 1, 16) : 1;
 
-        if (count == 1 || item.TotalBytes <= 0)
+        if (count == 1 || item.Runtime.TotalBytes <= 0)
         {
             segments.Add(new DownloadSegment
             {
                 Index = 0,
                 StartByte = 0,
-                EndByte = Math.Max(0, item.TotalBytes - 1),
+                EndByte = item.Runtime.TotalBytes > 0 ? item.Runtime.TotalBytes - 1 : -1,
                 TempFilePath = Path.Combine(tempDir, "part0.tmp")
             });
             return RestoreExistingProgress(segments);
         }
 
-        var chunkSize = item.TotalBytes / count;
+        var chunkSize = item.Runtime.TotalBytes / count;
         for (var i = 0; i < count; i++)
         {
             var start = i * chunkSize;
-            var end = (i == count - 1) ? item.TotalBytes - 1 : start + chunkSize - 1;
+            var end = (i == count - 1) ? item.Runtime.TotalBytes - 1 : start + chunkSize - 1;
             segments.Add(new DownloadSegment
             {
                 Index = i,
@@ -369,7 +424,7 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
 
     // --- Per-segment download ---
 
-    private async Task DownloadSegmentAsync(DownloadItem item, RuntimeContext ctx, DownloadSegment segment, CancellationToken ct)
+    private async Task DownloadSegmentAsync(DownloadJob item, RuntimeContext ctx, DownloadSegment segment, CancellationToken ct)
     {
         if (segment.IsComplete)
         {
@@ -383,7 +438,7 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
         {
             try
             {
-                if (!item.SupportsResume && segment.DownloadedBytes > 0)
+                if (!item.Runtime.SupportsResume && segment.DownloadedBytes > 0)
                 {
                     segment.DownloadedBytes = 0;
                     using (var reset = new FileStream(segment.TempFilePath, FileMode.Create, FileAccess.Write, FileShare.None))
@@ -395,19 +450,31 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
                 ApplyRequestHeaders(request, item);
 
                 var expectedBytes = segment.TotalBytes - segment.DownloadedBytes;
-                if (item.SupportsResume)
+                if (item.Runtime.SupportsResume && !segment.IsOpenEnded)
                     request.Headers.Range = new RangeHeaderValue(segment.ResumeOffset, segment.EndByte);
 
                 using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
                 response.EnsureSuccessStatusCode();
+                var responseType = response.Content.Headers.ContentType?.MediaType;
+                var expectedCategory = DownloadCategoryResolver.Resolve(item.FileName);
+                if (expectedCategory is DownloadCategory.Video or DownloadCategory.Music
+                    && (string.Equals(responseType, "text/html", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(responseType, "application/xhtml+xml", StringComparison.OrdinalIgnoreCase)))
+                    throw new InvalidDataException("The server returned a web page instead of the requested media file. The link may have expired or require browser authorization.");
+                if (!item.Runtime.SupportsResume && response.StatusCode == HttpStatusCode.PartialContent)
+                {
+                    var fullRange = response.Content.Headers.ContentRange;
+                    if (fullRange?.From != 0 || fullRange.Length is null || fullRange.To != fullRange.Length - 1)
+                        throw new InvalidDataException("The server returned only part of the file without a requested range; the download was not completed.");
+                }
 
-                if (item.SupportsResume && response.StatusCode != HttpStatusCode.PartialContent)
+                if (item.Runtime.SupportsResume && !segment.IsOpenEnded && response.StatusCode != HttpStatusCode.PartialContent)
                     throw new IOException("The server ignored the requested byte range; refusing to append potentially invalid data.");
 
-                if (item.SupportsResume)
+                if (item.Runtime.SupportsResume && !segment.IsOpenEnded)
                 {
                     var range = response.Content.Headers.ContentRange;
-                    if (range?.From != segment.ResumeOffset || range.To != segment.EndByte || range.Length != item.TotalBytes)
+                    if (range?.From != segment.ResumeOffset || range.To != segment.EndByte || range.Length != item.Runtime.TotalBytes)
                         throw new IOException("The server returned an invalid byte range; refusing to append potentially invalid data.");
                 }
                 await using var responseStream = await response.Content.ReadAsStreamAsync(ct);
@@ -416,24 +483,48 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
                     FileMode.Append,
                     FileAccess.Write,
                     FileShare.None,
-                    bufferSize: 81920,
-                    useAsync: true);
+                    bufferSize: 1,
+                    options: FileOptions.Asynchronous | FileOptions.SequentialScan);
 
-                var throttled = new ThrottledStream(fileStream, item.SpeedLimitBytesPerSecond);
-                var buffer = new byte[81920];
-                int read;
-                while ((read = await responseStream.ReadAsync(buffer, ct)) > 0)
+                var bufferSize = item.Options.SpeedLimitBytesPerSecond > 0
+                    ? (int)Math.Min(65536, Math.Max(1, item.Options.SpeedLimitBytesPerSecond))
+                    : 65536;
+                var buffer = ArrayPool<byte>.Shared.Rent(bufferSize);
+                try
                 {
-                    await throttled.WriteAsync(buffer.AsMemory(0, read), ct);
+                int read;
+                while ((read = await responseStream.ReadAsync(buffer.AsMemory(0, bufferSize), ct)) > 0)
+                {
+                    if (segment.StartByte == 0 && segment.DownloadedBytes == 0 && !Path.HasExtension(item.FileName))
+                    {
+                        var detectedExtension = DetectExtension(buffer.AsSpan(0, read));
+                        if (detectedExtension is not null)
+                        {
+                            item.FileName = SanitizeFileName(item.FileName + detectedExtension);
+                            item.Options.Category = DownloadCategoryResolver.Resolve(item.FileName);
+                        }
+                    }
+
+                    if (ctx.BandwidthLimiter is not null)
+                        await ctx.BandwidthLimiter.WaitAsync(read, ct);
+                    await fileStream.WriteAsync(buffer.AsMemory(0, read), ct);
                     segment.DownloadedBytes += read;
                     ReportProgress(item, ctx, read);
                 }
 
-                if (segment.DownloadedBytes - (segment.TotalBytes - expectedBytes) != expectedBytes)
+                }
+                finally { ArrayPool<byte>.Shared.Return(buffer); }
+
+                if (!segment.IsOpenEnded && segment.DownloadedBytes - (segment.TotalBytes - expectedBytes) != expectedBytes)
                     throw new IOException($"Segment {segment.Index} ended early; expected {expectedBytes} bytes.");
 
                 segment.State = SegmentState.Completed;
                 return;
+            }
+            catch (InvalidDataException)
+            {
+                segment.State = SegmentState.Failed;
+                throw;
             }
             catch (OperationCanceledException)
             {
@@ -450,70 +541,94 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
         throw new IOException($"Segment {segment.Index} failed after {MaxRetriesPerSegment} attempts.");
     }
 
-    private void ApplyRequestHeaders(HttpRequestMessage request, DownloadItem item)
+    private void ApplyRequestHeaders(HttpRequestMessage request, DownloadJob item)
     {
-        if (!string.IsNullOrEmpty(item.UserAgent))
-            request.Headers.UserAgent.ParseAdd(item.UserAgent);
-        if (!string.IsNullOrEmpty(item.ReferrerUrl))
-            request.Headers.Referrer = new Uri(item.ReferrerUrl);
-        if (!string.IsNullOrEmpty(item.CookieHeader))
-            request.Headers.TryAddWithoutValidation("Cookie", item.CookieHeader);
-        if (!string.IsNullOrEmpty(item.ETag))
-            request.Headers.TryAddWithoutValidation("If-Range", item.ETag);
-        else if (item.LastModified is { } lastModified)
+        // Media CDNs must not transparently gzip/br-compress a byte-range
+        // response: the downloader validates offsets against the raw MP4
+        // bytes, just as the browser does for a video file.
+        request.Headers.Accept.ParseAdd("*/*");
+        request.Headers.AcceptEncoding.ParseAdd("identity");
+        if (!string.IsNullOrEmpty(item.Options.UserAgent))
+            request.Headers.UserAgent.ParseAdd(item.Options.UserAgent);
+        if (!string.IsNullOrEmpty(item.Options.ReferrerUrl))
+            request.Headers.Referrer = new Uri(item.Options.ReferrerUrl);
+        if (!string.IsNullOrEmpty(item.Options.CookieHeader))
+            request.Headers.TryAddWithoutValidation("Cookie", item.Options.CookieHeader);
+        if (!string.IsNullOrEmpty(item.Runtime.ETag))
+            request.Headers.TryAddWithoutValidation("If-Range", item.Runtime.ETag);
+        else if (item.Runtime.LastModified is { } lastModified)
             request.Headers.TryAddWithoutValidation("If-Range", lastModified.ToUniversalTime().ToString("R"));
     }
 
     // --- Progress + merge ---
 
-    private void ReportProgress(DownloadItem item, RuntimeContext ctx, int bytesJustRead)
+    private void ReportProgress(DownloadJob item, RuntimeContext ctx, int bytesJustRead)
     {
         Interlocked.Add(ref ctx.TotalDownloadedSnapshot, bytesJustRead);
         Interlocked.Add(ref ctx.BytesSinceLastReport, bytesJustRead);
-        item.DownloadedBytes = ctx.TotalDownloadedSnapshot;
+        item.Runtime.DownloadedBytes = ctx.TotalDownloadedSnapshot;
 
-        var now = DateTime.UtcNow;
-        if (now - ctx.LastProgressReport < ProgressReportInterval)
-            return;
-
-        var elapsed = (now - ctx.LastProgressReport).TotalSeconds;
-        var bps = elapsed > 0 ? ctx.BytesSinceLastReport / elapsed : 0;
-        ctx.BytesSinceLastReport = 0;
-        ctx.LastProgressReport = now;
-
-        var remaining = item.TotalBytes - item.DownloadedBytes;
-        TimeSpan? eta = bps > 0 ? TimeSpan.FromSeconds(remaining / bps) : null;
-
-        ProgressChanged?.Invoke(this, new DownloadProgressEventArgs
+        var now = Stopwatch.GetTimestamp();
+        var previous = Volatile.Read(ref ctx.LastProgressTimestamp);
+        if (Stopwatch.GetElapsedTime(previous, now) < ProgressReportInterval
+            || Interlocked.CompareExchange(ref ctx.ReportingProgress, 1, 0) != 0) return;
+        try
         {
-            DownloadId = item.Id,
-            DownloadedBytes = item.DownloadedBytes,
-            TotalBytes = item.TotalBytes,
-            BytesPerSecond = bps,
-            Eta = eta
-        });
+            previous = Volatile.Read(ref ctx.LastProgressTimestamp);
+            var elapsed = Stopwatch.GetElapsedTime(previous, now).TotalSeconds;
+            if (elapsed < ProgressReportInterval.TotalSeconds) return;
+            Volatile.Write(ref ctx.LastProgressTimestamp, now);
+            var bytes = Interlocked.Exchange(ref ctx.BytesSinceLastReport, 0);
+            var total = Interlocked.Read(ref ctx.TotalDownloadedSnapshot);
+            var bps = bytes / elapsed;
+            item.Runtime.DownloadedBytes = total;
+            TimeSpan? eta = bps > 0 && item.Runtime.TotalBytes > 0
+                ? TimeSpan.FromSeconds(Math.Max(0, item.Runtime.TotalBytes - total) / bps) : null;
+            ProgressChanged?.Invoke(this, new DownloadProgressEventArgs
+            {
+                DownloadId = item.Id, DownloadedBytes = total, TotalBytes = item.Runtime.TotalBytes,
+                BytesPerSecond = bps, Eta = eta
+            });
+        }
+        finally { Volatile.Write(ref ctx.ReportingProgress, 0); }
     }
 
-    private async Task MergeSegmentsAsync(DownloadItem item, List<DownloadSegment> segments)
+    private async Task MergeSegmentsAsync(DownloadJob item, List<DownloadSegment> segments, CancellationToken cancellationToken)
     {
         item.FileName = GetAvailableFileName(item);
         var finalizingPath = item.FullPath + ".mdm-finalizing";
         try { if (File.Exists(finalizingPath)) File.Delete(finalizingPath); } catch { }
 
         {
-            await using var output = new FileStream(finalizingPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, useAsync: true);
+            await using var output = new FileStream(
+                finalizingPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                1, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            long mergedBytes = 0;
             foreach (var segment in segments.OrderBy(s => s.Index))
             {
-                await using var input = new FileStream(segment.TempFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true);
-                await input.CopyToAsync(output);
+                cancellationToken.ThrowIfCancellationRequested();
+                var expectedBytes = segment.IsOpenEnded ? 0 : segment.EndByte - segment.StartByte + 1;
+                await using var input = new FileStream(
+                    segment.TempFilePath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                    1, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                if (!segment.IsOpenEnded && input.Length != expectedBytes)
+                    throw new IOException($"Segment {segment.Index + 1} is incomplete ({input.Length:N0} of {expectedBytes:N0} bytes).");
+
+                await input.CopyToAsync(output, 131072, cancellationToken);
+                mergedBytes += input.Length;
             }
-            await output.FlushAsync();
+            await output.FlushAsync(cancellationToken);
             output.Flush(true);
+
+            if (item.Runtime.TotalBytes > 0 && mergedBytes != item.Runtime.TotalBytes)
+                throw new IOException($"Merged file size is {mergedBytes:N0} bytes, expected {item.Runtime.TotalBytes:N0} bytes.");
         }
+
+        cancellationToken.ThrowIfCancellationRequested();
         File.Move(finalizingPath, item.FullPath, overwrite: false);
     }
 
-    private static string GetAvailableFileName(DownloadItem item)
+    private static string GetAvailableFileName(DownloadJob item)
     {
         if (!File.Exists(item.FullPath))
             return item.FileName;
@@ -530,9 +645,9 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
         throw new IOException("Could not choose a non-conflicting output filename.");
     }
 
-    private void SetState(DownloadItem item, DownloadState state, string? error = null)
+    private void SetState(DownloadJob item, DownloadState state, string? error = null)
     {
-        item.State = state;
+        item.Runtime.State = state;
         StateChanged?.Invoke(this, new DownloadStateChangedEventArgs
         {
             DownloadId = item.Id,
@@ -541,7 +656,7 @@ public sealed class SegmentedDownloader : IDownloadEngine, IDisposable
         });
     }
 
-    private static string GetTempDir(DownloadItem item) =>
+    private static string GetTempDir(DownloadJob item) =>
         Path.Combine(item.DestinationDirectory, $".mdm-{item.Id:N}");
 
     private static bool ValidatorsChanged(string? oldETag, DateTimeOffset? oldLastModified,
